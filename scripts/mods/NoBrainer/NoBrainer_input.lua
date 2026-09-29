@@ -419,11 +419,60 @@ local function _apply_route(fn, action, result, source)
 	return next_result
 end
 
+-- Search and Drill hold an outro before native should_exit; one normal cancel after
+-- observed completion skips only that wait and uses the native walking/stop teardown.
+local FAST_EXIT_SETTINGS = {
+	decode_search = "enable_expedition_auto_solve",
+	drill = "enable_drill_auto",
+}
+local fast_exit_sent_key = nil
+
+mod._reg("runtime_reset", function()
+	fast_exit_sent_key = nil
+end)
+
+local function _local_minigame()
+	local player_manager = Managers.player
+	local player = player_manager and player_manager:local_player_safe(1)
+	local unit = player and player.player_unit
+	if not unit or not Unit.alive(unit) then return nil end
+
+	local csm = ScriptUnit.has_extension(unit, "character_state_machine_system")
+	if not csm or csm:current_state_name() ~= "minigame" then return nil end
+
+	local state = csm:current_state()
+	return state and state._minigame
+end
+
+local function _fast_exit(action, result, source)
+	if result or source ~= "input_service" or not _minigame_view_active() then return nil end
+
+	local mg = _local_minigame()
+	if not mg then return nil end
+	local extension = mg._minigame_extension
+	local setting = extension and FAST_EXIT_SETTINGS[extension:minigame_type()]
+	if not setting then return nil end
+
+	local key = tostring(mg)
+	if not mg:is_completed() then
+		if fast_exit_sent_key == key then fast_exit_sent_key = nil end
+		return nil
+	end
+	if fast_exit_sent_key == key or not S(setting) then return nil end
+
+	fast_exit_sent_key = key
+	return true
+end
+
 function mod._route_input(action, result, source)
 	local r = result
 
 	if not mod:is_enabled() then
 		return r
+	end
+
+	if action == "action_two_pressed" and _fast_exit(action, r, source) then
+		return true
 	end
 
 	if (action == "action_two_pressed" or action == "interact_pressed") and mod._ds_reroll_input then
