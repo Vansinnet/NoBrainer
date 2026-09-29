@@ -16,8 +16,14 @@ local function _deps()
 end
 
 local HIGHLIGHT = { 110, 255, 165, 0 }
-local SEARCH_MOVE_SYNC_LOCK = 0.35
-local SEARCH_MOVE_PENDING_TIMEOUT = 0.8
+-- Movement transport follows the BetterBrainer Search window: native on_axis_set moves one
+-- cell per axis per serialized direction frame after a neutral frame, so every command is one
+-- direction frame followed by neutral. Receipts are the replicated cursor, never elapsed time.
+local SEARCH_BASE_ACK_TIMEOUT = 0.8
+local SEARCH_MAX_ACK_TIMEOUT = 3.2
+local SEARCH_MAX_BACKOFF = 4
+local SEARCH_HIGH_PING_RTT = 0.25
+local SEARCH_PING_INTERVAL = 1
 local SEARCH_MAX_MOVE_DELAY = 1.054
 local SEARCH_MAX_STAGE_DELAY = 1.632
 local SEARCH_MAX_SUBMIT_SETTLE = 0.646
@@ -30,8 +36,17 @@ local active_search_key = nil
 local search_completed = false
 local search_restart_key = nil
 local search_restart_until = 0
+local active_search_mg = nil
+
+local move_pending = {}
+local move_limit, move_cautious, move_backoff = 2, false, 1
+local move_base_timeout, move_ack_timeout, move_next_ping = SEARCH_BASE_ACK_TIMEOUT, SEARCH_BASE_ACK_TIMEOUT, 0
+local move_resync_until = nil
+local move_release = true
+local move_frame, move_x, move_y = nil, 0, 0
 
 mod._exp.session_active = false
+mod._exp_pending_moves = move_pending
 
 local function _game_time()
 	return mod._time("gameplay")
@@ -106,11 +121,7 @@ local function _exp_move_delay()
 end
 
 local function _arm_move_cooldown()
-	mod._exp_move_cooldown = math.max(mod._exp_move_cooldown or 0, _exp_move_delay(), SEARCH_MOVE_SYNC_LOCK)
-end
-
-local function _arm_acknowledged_move_cooldown()
-	mod._exp_move_cooldown = _exp_move_delay()
+	mod._exp_move_cooldown = math.max(mod._exp_move_cooldown or 0, _exp_move_delay())
 end
 
 local function _is_gameplay(mg)
@@ -133,24 +144,25 @@ local function _reset_submit_settle()
 	mod._exp_on_target_target_y = nil
 end
 
+-- Dropping unconfirmed commands is safe: a later cursor change without a matching command
+-- is a mismatch and enters neutral resynchronization.
 local function _clear_pending_move()
+	table.clear(move_pending)
 	mod._exp_pending_move = nil
 end
 
-local function _pending_move_active(now)
-	local pending = mod._exp_pending_move
+local function _reset_move_state()
+	_clear_pending_move()
+	move_limit, move_cautious, move_backoff = 2, false, 1
+	move_base_timeout, move_ack_timeout, move_next_ping = SEARCH_BASE_ACK_TIMEOUT, SEARCH_BASE_ACK_TIMEOUT, 0
+	move_resync_until = nil
+	move_release = true
+	move_frame, move_x, move_y = nil, 0, 0
+	mod._exp_prev_cursor = nil
+end
 
-	if not pending then return false end
-
-	now = now or _game_time() or 0
-
-	if now >= (pending.until_t or 0) then
-		_clear_pending_move()
-		_reset_submit_settle()
-		return false
-	end
-
-	return true
+local function _moves_busy()
+	return move_pending[1] ~= nil or move_resync_until ~= nil
 end
 
 local function _stage(mg)
@@ -420,69 +432,154 @@ local function _clear_match_cache(mg)
 	_reset_submit_settle()
 end
 
-local function _mark_move_sent(cursor_x, cursor_y, dir, now)
-	_arm_move_cooldown()
-	mod._exp_last_move_at = now
-	mod._exp_pending_move = {
-		cursor_x = cursor_x,
-		cursor_y = cursor_y,
-		dir_x = dir and dir.x,
-		dir_y = dir and dir.y,
-		until_t = now + SEARCH_MOVE_PENDING_TIMEOUT,
+local function _poll_ping(mg, t)
+	if mg._is_server or t < move_next_ping then return end
+
+	local connection = Managers.connection
+	local host = connection and connection:host()
+	local rtt = host and Network.ping(host)
+	if type(rtt) ~= "number" or rtt ~= rtt or rtt < 0 or rtt == math.huge then rtt = 0 end
+
+	-- Reduce the window immediately; expand only after outstanding commands drain.
+	if rtt >= SEARCH_HIGH_PING_RTT then
+		move_limit = 1
+	elseif not move_pending[1] then
+		move_limit = 2
+	end
+
+	move_base_timeout = math.min(SEARCH_MAX_ACK_TIMEOUT, math.max(SEARCH_BASE_ACK_TIMEOUT, rtt * 2 + 0.2))
+	move_ack_timeout = math.min(SEARCH_MAX_ACK_TIMEOUT, move_base_timeout * move_backoff)
+	move_next_ping = t + SEARCH_PING_INTERVAL
+end
+
+local function _observe_moves(mg, t)
+	_poll_ping(mg, t)
+
+	local cursor = mg:cursor_position()
+	if not cursor then return nil end
+
+	local prev = mod._exp_prev_cursor
+	local changed = prev ~= nil and (prev.x ~= cursor.x or prev.y ~= cursor.y)
+	local mismatch = false
+
+	if move_resync_until then
+		-- Wait for a quiet authoritative cursor before trusting a new baseline.
+		if changed then move_resync_until = t + move_ack_timeout end
+		if t >= move_resync_until then move_resync_until = nil end
+	elseif changed then
+		local matched = false
+
+		for i = #move_pending, 1, -1 do
+			local command = move_pending[i]
+			local complete = cursor.x == command.x and cursor.y == command.y
+			-- A diagonal replicates X before Y. Retire predecessors, not this partial move.
+			local partial = command.diagonal and cursor.x == command.x and cursor.y == command.cursor_y
+
+			if complete or partial then
+				for _ = 1, complete and i or i - 1 do
+					table.remove(move_pending, 1)
+				end
+
+				if complete then
+					move_cautious, move_backoff, move_ack_timeout = false, 1, move_base_timeout
+					mod._exp_last_move_at = t
+					_arm_move_cooldown()
+				end
+
+				matched = true
+				break
+			end
+		end
+
+		mismatch = not matched
+	end
+
+	if not move_resync_until and (mismatch or move_pending[1] and t >= move_pending[1].until_t) then
+		-- Overshoot, undershoot or a lost command: a timeout is not an ACK. Drain late traffic
+		-- with neutral input, then re-plan from the authoritative cursor one command at a time.
+		table.clear(move_pending)
+		move_cautious = true
+		move_backoff = math.min(SEARCH_MAX_BACKOFF, move_backoff * 2)
+		move_ack_timeout = math.min(SEARCH_MAX_ACK_TIMEOUT, move_base_timeout * move_backoff)
+		move_resync_until = t + move_ack_timeout
+		move_release = true
+	end
+
+	if changed or mismatch then
+		_reset_submit_settle()
+	end
+
+	mod._exp_pending_move = move_pending[1]
+
+	if prev then
+		prev.x, prev.y = cursor.x, cursor.y
+	else
+		mod._exp_prev_cursor = { x = cursor.x, y = cursor.y }
+	end
+
+	return cursor
+end
+
+local function _plan_move(mg, cursor, t)
+	if move_resync_until or #move_pending >= (move_cautious and 1 or move_limit) then return end
+	if (mod._exp_startup_delay or 0) > 0 or (mod._exp_move_cooldown or 0) > 0 then return end
+	if t < (mod._exp_release_until or 0) or t < (mod._exp_submitted_until or 0) then return end
+
+	local target = _find_target(mg, cursor)
+	if not target then return end
+
+	local tail = move_pending[#move_pending]
+	local x, y = tail and tail.x or cursor.x, tail and tail.y or cursor.y
+	local dx, dy = target.x - x, target.y - y
+	if dx == 0 and dy == 0 then return end
+
+	move_x = dx == 0 and 0 or dx > 0 and 1 or -1
+	move_y = dy == 0 and 0 or dy > 0 and -1 or 1
+	move_pending[#move_pending + 1] = {
+		cursor_x = x,
+		cursor_y = y,
+		dir_x = move_x,
+		dir_y = move_y,
+		x = x + move_x,
+		y = y - move_y,
+		diagonal = move_x ~= 0 and move_y ~= 0,
+		until_t = t + move_ack_timeout,
 	}
+	mod._exp_pending_move = move_pending[1]
+	mod._exp_last_move_at = t
+	_arm_move_cooldown()
+	move_release = true
 	_reset_submit_settle()
 end
 
-function mod._exp_find_move_dir()
-	local exp = mod._exp
-	if not exp or not exp.session_active or exp.timer <= 0 or not exp.active then return nil end
-	if not exp.gameplay then
-		return nil
-    end
+-- Called only while HumanInputHandler serializes a fixed frame for the local player.
+-- Returns nil when the solver does not own movement; otherwise one direction frame per
+-- command and neutral on every other frame, never the player's own movement.
+function mod._exp_move_input(action, frame)
+	local mg = active_search_mg
+	if not mg or not search_active or not frame or not S("enable_expedition_auto_solve") then return nil end
+	if not _scanner_view_active() or mg:is_completed() or not _is_gameplay(mg) then return nil end
 
-	if not exp.cursor_x or not exp.cursor_y then
-		return nil
-    end
+	local t = _game_time()
+	if not t then return nil end
 
-	if not exp.target_x or not exp.target_y then
-		return nil
-    end
+	if move_frame ~= frame then
+		move_frame, move_x, move_y = frame, 0, 0
 
-	local dx = exp.target_x - exp.cursor_x
-	local dy = exp.target_y - exp.cursor_y
-
-	if dx == 0 and dy == 0 then return nil end
-
-	local x = dx == 0 and 0 or dx > 0 and 1 or -1
-	local y = dy == 0 and 0 or dy > 0 and -1 or 1
-
-	return Vector3(x, y, 0)
-end
-
-function mod._exp_move_blocked(now)
-	return _pending_move_active(now) or (mod._exp_move_cooldown or 0) > 0
-end
-
-function mod._exp_take_move_dir(now)
-	now = now or _game_time()
-	if not now then return nil end
-
-	if _pending_move_active(now) then
-		return nil
+		local cursor = _observe_moves(mg, t)
+		if move_release then
+			move_release = false
+		elseif cursor then
+			_plan_move(mg, cursor, t)
+		end
 	end
 
-	if (mod._exp_move_cooldown or 0) > 0 then
-		return nil
-	end
+	if action == "move_left" then return math.max(-move_x, 0) end
+	if action == "move_right" then return math.max(move_x, 0) end
+	if action == "move_forward" then return math.max(move_y, 0) end
+	if action == "move_backward" then return math.max(-move_y, 0) end
 
-	local cursor_x, cursor_y = _cursor_target()
-	local dir = mod._exp_find_move_dir()
-
-	if dir then
-		_mark_move_sent(cursor_x, cursor_y, dir, now)
-	end
-
-	return dir
+	return Vector3(move_x, move_y, 0)
 end
 
 function mod._exp_is_on_target()
@@ -509,11 +606,12 @@ function mod._exp_ready_to_submit(now)
 	local pacing = mod._speed_pacing("expedition_solve_speed")
 	local fast_submit = pacing <= 0
 
-	if fast_submit then
-		if _pending_move_active(now) then
-			return false
-		end
-	else
+	if _moves_busy() then
+		_reset_submit_settle()
+		return false
+	end
+
+	if not fast_submit then
 		local last_move_at = mod._exp_last_move_at or 0
 		local since_move = now - last_move_at
 
@@ -573,7 +671,8 @@ local function _exp_cleanup(reason)
 	mod._exp_submitted_until = 0
 	mod._exp_prev_cursor = nil
 	mod._exp_last_move_at = 0
-	_clear_pending_move()
+	active_search_mg = nil
+	_reset_move_state()
 	_reset_submit_settle()
 end
 
@@ -592,6 +691,8 @@ local function _arm_search_session(mg, restart_until)
 	mod._exp_last_move_at = 0
 	search_active = true
 	active_search_key = tostring(mg)
+	active_search_mg = mg
+	_reset_move_state()
 	search_completed = false
 	search_restart_key = nil
 	search_restart_until = restart_until or (now and now + SEARCH_RESTART_RECOVERY_TIMEOUT or 0)
@@ -688,26 +789,6 @@ function mod._exp_rearm_from_state(state, t)
 	_arm_search_session(mg, restart_until)
 end
 
-mod:hook("MinigameDecodeSearch", "on_axis_set", function(func, self, t, x, y)
-	if S("enable_expedition_auto_solve") then
-		local pos = self._cursor_position
-		local cx, cy = pos and pos.x, pos and pos.y
-
-		func(self, t, x, y)
-
-		local np = self._cursor_position
-		if np and (np.x ~= cx or np.y ~= cy) then
-			_clear_pending_move()
-			_reset_submit_settle()
-			mod._exp_last_move_at = t or _game_time() or 0
-			_arm_acknowledged_move_cooldown()
-		end
-
-		return
-	end
-	return func(self, t, x, y)
-end)
-
 local function on_round_end_move() _exp_cleanup(search_active and "round_end" or nil) end
 mod._reg("round_end", on_round_end_move)
 
@@ -727,31 +808,6 @@ local function on_update_exp(dt)
 	if mod._exp_move_cooldown > 0 then mod._exp_move_cooldown = math.max(mod._exp_move_cooldown - dt, 0) end
 
 	if not S("enable_expedition_auto_solve") or not exp or not exp.session_active or exp.timer <= 0 or not exp.active then return end
-
-	local prev = mod._exp_prev_cursor
-	if exp.cursor_x and exp.cursor_y and prev and (exp.cursor_x ~= prev.x or exp.cursor_y ~= prev.y) then
-		local pending = mod._exp_pending_move
-		local expected_x = pending and pending.cursor_x and pending.dir_x and pending.cursor_x + pending.dir_x
-		local expected_y = pending and pending.cursor_y and pending.dir_y and pending.cursor_y - pending.dir_y
-		local sync_complete = not pending or exp.cursor_x == expected_x and exp.cursor_y == expected_y
-
-		if sync_complete then
-			_clear_pending_move()
-			_reset_submit_settle()
-			mod._exp_last_move_at = _game_time() or mod._exp_last_move_at or 0
-			_arm_acknowledged_move_cooldown()
-		end
-	end
-	if exp.cursor_x and exp.cursor_y then
-		if prev then
-			prev.x = exp.cursor_x
-			prev.y = exp.cursor_y
-		else
-			mod._exp_prev_cursor = { x = exp.cursor_x, y = exp.cursor_y }
-		end
-	else
-		mod._exp_prev_cursor = nil
-	end
 
 	if mod._exp_startup_delay > 0 then return end
 

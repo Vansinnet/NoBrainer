@@ -4,6 +4,11 @@
 ### Added
 - **Search and Drill fast exit**: After the local minigame reports completion, NoBrainer sends one normal cancel input to skip the native outro wait (0.25s for Search, 0.6s for Drill). Exit uses the game's own cancel path, so completion, objective progress, and scanner teardown are handled natively. Always on while the matching auto-solve setting is enabled; Decode Symbols, Frequency, and Balance already exit on completion.
 
+### Changed
+- **Decode Search movement transport**: Ported the BetterBrainer Search movement window. Each move is one direction frame serialized for the local player, followed by neutral input, so the native 0.25s repeat lock never adds hidden extra steps. Up to two moves are in flight below 250ms ping and one at or above it. The receipt deadline follows ping (`2 x RTT + 0.2s`, 0.8-3.2s). Removed the fixed 0.35s per-move sync lock.
+- **Decode Search overshoot and undershoot recovery**: A cursor position that matches no pending move (too far, wrong direction) or a move that is never confirmed (too short) drops all predictions, holds neutral until the authoritative cursor has been quiet for the receipt deadline, then re-plans from the real cursor one move at a time with backoff up to 4x (capped at 3.2s). Only a full confirmed move restores the normal window. Submission waits until no moves are pending and no resynchronization is active.
+- **Offline harness**: `tests/decode_search_movement_harness.lua` drives the solver against the native `on_axis_set` rules with latency, lost moves and extra steps.
+
 ### Fixed
 - **Servo-skull hack target check**: Replaced the removed `SmartTagExtension:is_particular_target_type("hack")` call with a direct `_target_type == "hack"` comparison. The method was removed from the current game source while the `_target_type` field remains, so the old call would fail and break servo-skull auto-hack target search.
 

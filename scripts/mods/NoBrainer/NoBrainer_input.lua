@@ -54,45 +54,6 @@ local function _decode(action, result, source)
 	return result
 end
 
-local function _exp_move(action, result, source)
-	if not _is_movement_action(action) then return result end
-	if not S("enable_expedition_auto_solve") then return result end
-	local exp = mod._exp
-	if not exp or not exp.session_active or exp.timer <= 0 or not exp.active or not exp.gameplay then return result end
-	if (mod._exp_startup_delay or 0) > 0 then return result end
-	if not _minigame_view_active() then return result end
-
-	local now = mod._time("gameplay")
-
-	if MOVE_ACTIONS[action] then
-		if not now then return result end
-		if mod._exp_move_blocked and mod._exp_move_blocked(now) then return result end
-
-		local dir = source == "player_unit_input" and mod._exp_take_move_dir and mod._exp_take_move_dir(now)
-			or mod._exp_find_move_dir and mod._exp_find_move_dir()
-		if not dir then return result end
-
-		return dir
-	end
-
-	if mod._exp_move_cooldown > 0 or mod._exp_move_blocked and mod._exp_move_blocked(now) then
-		if action == "move_left" or action == "move_right"
-			or action == "move_forward" or action == "move_backward" then
-			return result
-		end
-	end
-
-	local dir = mod._exp_find_move_dir and mod._exp_find_move_dir()
-	if not dir then return result end
-
-	if action == "move_left"      and dir.x < -0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.x)) end
-	if action == "move_right"     and dir.x >  0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.x)) end
-	if action == "move_forward"   and dir.y >  0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.y)) end
-	if action == "move_backward"  and dir.y < -0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.y)) end
-
-	return result
-end
-
 local function _expedition(action, result)
 	local is_submit_action = _is_primary_hold_action(action)
 	if not is_submit_action then return result end
@@ -464,6 +425,29 @@ local function _fast_exit(action, result, source)
 	return true
 end
 
+-- Set only while HumanInputHandler serializes a fixed frame for the local player, so solvers
+-- that decide per serialized frame never answer UI or other InputService readers.
+local sampling_frame = nil
+
+local function _finish_sampling(...)
+	sampling_frame = nil
+	return ...
+end
+
+local hooked_input_handlers = setmetatable({}, { __mode = "k" })
+mod:hook_require("scripts/managers/player/player_game_states/human_input_handler", function(Handler)
+	if hooked_input_handlers[Handler] then return end
+	hooked_input_handlers[Handler] = true
+	mod:hook(Handler, "fixed_update", function(func, self, dt, t, frame, input_service, yaw, pitch, roll)
+		if not mod._is_local_minigame_player(self._player) then
+			return func(self, dt, t, frame, input_service, yaw, pitch, roll)
+		end
+
+		sampling_frame = frame
+		return _finish_sampling(func(self, dt, t, frame, input_service, yaw, pitch, roll))
+	end)
+end)
+
 function mod._route_input(action, result, source)
 	local r = result
 
@@ -487,6 +471,13 @@ function mod._route_input(action, result, source)
 		return r
 	end
 
+	if movement_action and source == "input_service" and sampling_frame and mod._exp_move_input then
+		local move = mod._exp_move_input(action, sampling_frame)
+		if move ~= nil then
+			return move
+		end
+	end
+
 	if not _any_minigame_active() then
 		return r
 	end
@@ -499,7 +490,6 @@ function mod._route_input(action, result, source)
 	end
 
 	if movement_action then
-		r = _apply_route(_exp_move, action, r, source)
 		r = _apply_route(_drill, action, r, source)
 		r = _apply_route(_frequency, action, r, source)
 		r = _apply_route(_balance, action, r, source)
