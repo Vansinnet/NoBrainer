@@ -74,7 +74,7 @@ local function nearest_hack_target(smart_tag_system, player_unit, player_positio
 	local nearest_distance_sq = command_range_sq
 
 	for unit, extension in pairs(smart_tag_system._unit_extension_data) do
-		if unit ~= player_unit and Unit.alive(unit) and extension:is_particular_target_type("hack") then
+		if unit ~= player_unit and Unit.alive(unit) and extension._target_type == "hack" then
 			local template = extension:contextual_tag_template(player_unit, true)
 
 			if template and template.name == COMPANION_HACK_TAG then
