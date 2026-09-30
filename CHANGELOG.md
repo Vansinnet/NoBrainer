@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.7] - 2026-09-30
+### Changed
+- **Decode Symbols reroll valuation (Darktide 1.13.0)**: 1.13.0 sends the start time as `fixed_t + rewind_seconds` instead of adding milliseconds as seconds, so a client now receives a near-constant cursor start phase (measured on a dedicated server: offset -0.021 to +0.004s over 16 starts). Known future boards are now valued at the measured client phase (separately for the predicted fast-sync path and the normal sync path) instead of averaging 32 uniform phases, and the statistical threshold uses the same phase. The measured phase is trusted only after two consecutive client evaluations at or below 0.5s and is cleared by any larger sample or mission reset; host/solo and unmeasured sessions keep the uniform model. Offline: about 0.10-0.18s saved per terminal, no meaningful loss if the phase became random again.
+- **Offline harness**: `tests/decode_symbols_reroll_phase_harness.lua` runs the real reroll module through the full cancel/reinteract/restart chain and compares measured-phase and uniform-phase valuation on identical boards.
+
 ## [3.1.6] - 2026-09-29
 ### Added
 - **Search and Drill fast exit**: After the local minigame reports completion, NoBrainer sends one normal cancel input to skip the native outro wait (0.25s for Search, 0.6s for Drill). Exit uses the game's own cancel path, so completion, objective progress, and scanner teardown are handled natively. Always on while the matching auto-solve setting is enabled; Decode Symbols, Frequency, and Balance already exit on completion.

@@ -21,11 +21,24 @@ local MIN_STAGE_READY_DELAY = PRESS_DURATION + RELEASE_DURATION
 local STAGE_READY_BUCKET = 0.05
 local RESTART_SYNC_MARGIN = 0.12
 local SYNC_TARGET_EDGE_MARGIN = 0.03
+-- Darktide 1.13.0 sends the Decode Symbols start as fixed_t + LagCompensation.rewind_seconds
+-- (1.12.x added milliseconds as seconds), so a client now receives a near-constant start phase.
+-- A board is evaluated within the sync wait, so initial_ready at or below this bound is measured
+-- start-phase evidence; a larger value means the phase is not deterministic and the uniform
+-- phase model is kept. Two consecutive in-bound client evaluations are required before the
+-- measured phase is trusted, so a single low sample from a random phase cannot steer decisions.
+local MEASURED_PHASE_MAX = 0.5
+local MEASURED_PHASE_MIN_STREAK = 2
+local MEASURED_PHASE_BUCKET = 0.01
 
 local system_trackers = setmetatable({}, { __mode = "k" })
 local extension_initial_seeds = setmetatable({}, { __mode = "k" })
 local distribution_cache = {}
 local distribution_cache_entries = 0
+-- Latest client initial_ready per sync path. The phase follows the game's start-time formula and
+-- the mod's sync wait, not the server, so it is kept across terminals in a mission and
+-- cleared on mission reset or by an out-of-bound sample.
+local measured_phase = { fast = nil, normal = nil, streak = 0 }
 
 local state = {
     phase = "idle",
@@ -50,6 +63,7 @@ local state = {
     fast_sync = false,
     decision_reason = nil,
     stage_ready_delay = MIN_STAGE_READY_DELAY,
+    next_phase = nil,
 }
 
 local function enabled()
@@ -91,6 +105,7 @@ local function reset_state(keep_retry_cost)
     state.fast_sync = false
     state.decision_reason = nil
     state.stage_ready_delay = MIN_STAGE_READY_DELAY
+    state.next_phase = nil
 end
 
 local function client_retry_floor(minigame)
@@ -141,6 +156,7 @@ local function clear_decision()
     state.fast_sync = false
     state.decision_reason = nil
     state.stage_ready_delay = nil
+    state.next_phase = nil
 end
 
 local function accept_board(reason)
@@ -286,12 +302,12 @@ local function board_cost(targets, sweep_duration, items_per_stage, initial_read
     return ready_time
 end
 
-local function distribution(sweep_duration, items_per_stage, ready_delay, startup_safe)
+local function distribution(sweep_duration, items_per_stage, ready_delay, startup_safe, fixed_phase)
     if items_per_stage ~= 7 then
         return nil
     end
 
-    local cache_key = table.concat({ sweep_duration, items_per_stage, ready_delay, tostring(startup_safe) }, ":")
+    local cache_key = table.concat({ sweep_duration, items_per_stage, ready_delay, tostring(startup_safe), tostring(fixed_phase) }, ":")
     local cached = distribution_cache[cache_key]
     if cached then
         return cached
@@ -313,8 +329,9 @@ local function distribution(sweep_duration, items_per_stage, ready_delay, startu
                             if fourth ~= third then
                                 targets[4] = fourth
                                 local period = sweep_duration * 2
-                                for phase_index = 1, PHASE_SAMPLE_COUNT do
-                                    local initial_ready = (phase_index - 0.5) * period / PHASE_SAMPLE_COUNT
+                                local samples = fixed_phase and 1 or PHASE_SAMPLE_COUNT
+                                for phase_index = 1, samples do
+                                    local initial_ready = fixed_phase or (phase_index - 0.5) * period / PHASE_SAMPLE_COUNT
                                     local cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, startup_safe)
                                     costs[#costs + 1] = cost
                                     total = total + cost
@@ -341,8 +358,8 @@ local function distribution(sweep_duration, items_per_stage, ready_delay, startu
     return cached
 end
 
-local function statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining)
-    local values = distribution(sweep_duration, items_per_stage, ready_delay, startup_safe)
+local function statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining, next_phase)
+    local values = distribution(sweep_duration, items_per_stage, ready_delay, startup_safe, next_phase)
     if not values then
         return nil
     end
@@ -378,6 +395,53 @@ local function expected_phase_cost(targets, sweep_duration, items_per_stage, rea
     end
 
     return total / PHASE_SAMPLE_COUNT
+end
+
+-- A known future board is valued at the measured start phase when one exists, else over the
+-- uniform phase distribution.
+local function board_value(targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value, next_phase)
+    if not next_phase then
+        return expected_phase_cost(targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value)
+    end
+
+    local cost = board_cost(targets, sweep_duration, items_per_stage, next_phase, ready_delay, startup_safe)
+    if reroll_value and cost - reroll_value - MIN_EXPECTED_SAVING > COMPARISON_EPSILON then
+        return reroll_value
+    end
+
+    return cost
+end
+
+local function quantize_phase(phase)
+    return math.floor(phase / MEASURED_PHASE_BUCKET + 0.5) * MEASURED_PHASE_BUCKET
+end
+
+local function record_measured_phase(minigame, initial_ready)
+    if minigame._is_server == true then
+        return
+    end
+
+    if initial_ready > MEASURED_PHASE_MAX then
+        measured_phase.fast, measured_phase.normal, measured_phase.streak = nil, nil, 0
+        return
+    end
+
+    measured_phase.streak = measured_phase.streak + 1
+    if state.fast_sync then
+        measured_phase.fast = initial_ready
+    else
+        measured_phase.normal = initial_ready
+    end
+end
+
+-- A predicted board restarts on the fast sync path; an unknown board on the normal path.
+local function predicted_next_phase(minigame, predicted)
+    if minigame._is_server == true or measured_phase.streak < MEASURED_PHASE_MIN_STREAK then
+        return nil
+    end
+
+    local phase = predicted and (measured_phase.fast or measured_phase.normal) or measured_phase.normal
+    return phase and quantize_phase(phase) or nil
 end
 
 local function board_matches(minigame, board)
@@ -439,7 +503,7 @@ local function reconstructed_post_seed(minigame)
     return nil, matches == 0 and "no_match" or "ambiguous"
 end
 
-local function exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost)
+local function exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost, next_phase)
     local stage_amount = minigame._stage_amount
     local items_per_stage = minigame._decode_symbols_items_per_stage
     local sweep_duration = minigame._decode_symbols_sweep_duration
@@ -462,10 +526,10 @@ local function exact_choice(minigame, post_seed, current_cost, ready_delay, star
         return false, nil, nil
     end
 
-    local future_value = expected_phase_cost(boards[#boards].targets, sweep_duration, items_per_stage, ready_delay, startup_safe)
+    local future_value = board_value(boards[#boards].targets, sweep_duration, items_per_stage, ready_delay, startup_safe, nil, next_phase)
     for index = #boards - 1, 1, -1 do
         local reroll_value = retry_cost + future_value
-        future_value = expected_phase_cost(boards[index].targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value)
+        future_value = board_value(boards[index].targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value, next_phase)
     end
 
     local reroll_value = retry_cost + future_value
@@ -670,6 +734,7 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
     state.remaining = remaining
     state.initial_ready = initial_ready
     state.stage_ready_delay = ready_delay
+    record_measured_phase(minigame, initial_ready)
 
     if not state.force_statistical then
         local post_seed = predicted_post_seed
@@ -687,7 +752,9 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
 
         if post_seed then
             local retry_cost = exact_retry_cost(minigame)
-            should_reroll, next_board, alternative_cost = exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost)
+            local next_phase = predicted_next_phase(minigame, true)
+            state.next_phase = next_phase
+            should_reroll, next_board, alternative_cost = exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost, next_phase)
             if next_board then
                 state.retry_cost = retry_cost
             end
@@ -696,7 +763,9 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
     end
 
     if not should_reroll and not next_board then
-        local threshold = statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining)
+        local next_phase = predicted_next_phase(minigame, false)
+        state.next_phase = next_phase
+        local threshold = statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining, next_phase)
         alternative_cost = threshold
         state.decision_mode = "statistical"
         state.seed_status = state.seed_status or (state.force_statistical and "prediction_mismatch" or "unavailable")
@@ -779,6 +848,9 @@ function mod._ds_reroll_snapshot()
         initial_ready = state.initial_ready,
         prediction_match = state.prediction_match,
         fast_sync = state.fast_sync,
+        next_phase = state.next_phase,
+        measured_phase_fast = measured_phase.fast,
+        measured_phase_normal = measured_phase.normal,
         decision_reason = state.decision_reason,
         stage_ready_delay = state.stage_ready_delay,
         stage_ack_cost = mod._ds_stage_ack_cost,
@@ -819,6 +891,7 @@ end
 
 local function on_round_end()
     reset_state(false)
+    measured_phase.fast, measured_phase.normal, measured_phase.streak = nil, nil, 0
 end
 
 mod._reg("update", on_update)
