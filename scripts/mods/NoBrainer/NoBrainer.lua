@@ -125,6 +125,13 @@ local function _fire(list, ...)
 	end
 end
 
+-- A reload re-runs every module; start from empty callback lists.
+for key in pairs(mod) do
+    if type(key) == "string" and key:sub(1, 4) == "_on_" then
+        mod[key] = nil
+    end
+end
+
 mod._reg = function(ev, cb)
     mod["_on_" .. ev] = mod["_on_" .. ev] or {}
     mod["_on_" .. ev][#mod["_on_" .. ev] + 1] = cb
@@ -191,14 +198,14 @@ local function _load(path)
 	end
 end
 
-for _, m in ipairs({
-	"decode_symbols", "decode_search", "drill", "scan", "balance", "frequency", "servo_skull",
-}) do
+for _, m in ipairs({ "scan", "balance", "frequency", "servo_skull" }) do
     _load("NoBrainer_minigame_" .. m)
 end
 
 _load("NoBrainer_decode_symbols_reroll")
 _load("NoBrainer_input")
+-- Decode Symbols, Decode Search and Drill: frame solvers loaded by the core.
+_load("NoBrainer_core")
 
 mod.update = function(dt)
     if mod:is_enabled() then

@@ -11,16 +11,14 @@ local INITIAL_RETRY_COST = 0.75
 local RETRY_COST_ALPHA = 0.3
 local MIN_EXPECTED_SAVING = 0.5
 local MAX_RECONSTRUCTION_BOARDS = 256
-local PRESS_LEAD = 0.095
-local PRESS_GRACE = 0.06
-local PRESS_DURATION = 0.08
-local RELEASE_DURATION = 0.12
+-- The solver presses anywhere inside the native hit window less this margin (NoBrainer_minigame_decode_symbols.lua).
+local HIT_MARGIN = 0.03
 local COMPARISON_EPSILON = 0.000001
 local PHASE_SAMPLE_COUNT = 32
-local MIN_STAGE_READY_DELAY = PRESS_DURATION + RELEASE_DURATION
+-- Presses run ahead of stage receipts one release frame apart; the solver reports the real delay.
+local MIN_STAGE_READY_DELAY = 0.05
 local STAGE_READY_BUCKET = 0.05
 local RESTART_SYNC_MARGIN = 0.12
-local SYNC_TARGET_EDGE_MARGIN = 0.03
 -- Darktide 1.13.0 sends the Decode Symbols start as fixed_t + LagCompensation.rewind_seconds
 -- (1.12.x added milliseconds as seconds), so a client now receives a near-constant start phase.
 -- A board is evaluated within the sync wait, so initial_ready at or below this bound is measured
@@ -142,6 +140,14 @@ local function stage_ready_delay(minigame)
     delay = math.max(MIN_STAGE_READY_DELAY, delay or 0)
 
     return math.floor(delay / STAGE_READY_BUCKET + 0.5) * STAGE_READY_BUCKET
+end
+
+-- Submit-to-stage receipt delay of a client press (zero on a local server).
+local function stage_ack_delay(minigame)
+    local get_delay = mod._ds_stage_ack_delay
+    local delay = type(get_delay) == "function" and get_delay(minigame._is_server == true) or 0
+
+    return math.floor(math.max(0, delay or 0) / STAGE_READY_BUCKET + 0.5) * STAGE_READY_BUCKET
 end
 
 local function clear_decision()
@@ -266,48 +272,46 @@ local function next_periodic_time(at, phase, period)
     return phase + math.ceil((at - phase) / period) * period
 end
 
-local function board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, startup_safe)
+-- Time from the first possible press to the last stage's press: each stage presses at the first moment, no
+-- earlier than ready, at which the sweeping cursor lies inside its target's hit window less HIT_MARGIN.
+-- ready_delay separates consecutive presses; ack_delay is the receipt delay that limits presses in flight.
+local function board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, ack_delay)
     local period = sweep_duration * 2
     local margin = sweep_duration / (items_per_stage - 1)
+    local radius = math.max(0, margin * 0.5 - HIT_MARGIN)
     local ready_time = initial_ready
     local start_ready = initial_ready
     ready_delay = ready_delay or MIN_STAGE_READY_DELAY
+    ack_delay = ack_delay or 0
+    local before_last, last
 
     for stage = 1, #targets do
+        -- At most two presses await their stage receipts: a third waits for the first one's receipt.
+        if before_last then
+            ready_time = math.max(ready_time, before_last + ack_delay)
+        end
         local center = (targets[stage] - 1) * margin
-        local press_time
-        if stage == 1 and startup_safe then
-            local phase = initial_ready % period
-            local cursor = phase > sweep_duration and period - phase or phase
-            local edge_margin = margin * 0.5 - math.abs(cursor - center)
-            if edge_margin >= SYNC_TARGET_EDGE_MARGIN then
-                press_time = ready_time
-            end
-        end
-        if not press_time then
-            local forward = next_periodic_time(ready_time - PRESS_GRACE, center, period)
-            local reverse = next_periodic_time(ready_time - PRESS_GRACE, period - center, period)
-            local center_time = math.min(forward, reverse)
-
-            press_time = math.max(center_time - PRESS_LEAD, ready_time)
-        end
+        local forward = next_periodic_time(ready_time - radius, center, period)
+        local reverse = next_periodic_time(ready_time - radius, period - center, period)
+        local press_time = math.max(math.min(forward, reverse) - radius, ready_time)
 
         if stage == #targets then
             return press_time - start_ready
         end
 
+        before_last, last = last, press_time
         ready_time = press_time + ready_delay
     end
 
     return ready_time
 end
 
-local function distribution(sweep_duration, items_per_stage, ready_delay, startup_safe, fixed_phase)
+local function distribution(sweep_duration, items_per_stage, ready_delay, ack_delay, fixed_phase)
     if items_per_stage ~= 7 then
         return nil
     end
 
-    local cache_key = table.concat({ sweep_duration, items_per_stage, ready_delay, tostring(startup_safe), tostring(fixed_phase) }, ":")
+    local cache_key = table.concat({ sweep_duration, items_per_stage, ready_delay, ack_delay, tostring(fixed_phase) }, ":")
     local cached = distribution_cache[cache_key]
     if cached then
         return cached
@@ -332,7 +336,7 @@ local function distribution(sweep_duration, items_per_stage, ready_delay, startu
                                 local samples = fixed_phase and 1 or PHASE_SAMPLE_COUNT
                                 for phase_index = 1, samples do
                                     local initial_ready = fixed_phase or (phase_index - 0.5) * period / PHASE_SAMPLE_COUNT
-                                    local cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, startup_safe)
+                                    local cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, ack_delay)
                                     costs[#costs + 1] = cost
                                     total = total + cost
                                 end
@@ -358,8 +362,8 @@ local function distribution(sweep_duration, items_per_stage, ready_delay, startu
     return cached
 end
 
-local function statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining, next_phase)
-    local values = distribution(sweep_duration, items_per_stage, ready_delay, startup_safe, next_phase)
+local function statistical_threshold(sweep_duration, items_per_stage, ready_delay, ack_delay, remaining, next_phase)
+    local values = distribution(sweep_duration, items_per_stage, ready_delay, ack_delay, next_phase)
     if not values then
         return nil
     end
@@ -379,13 +383,13 @@ local function statistical_threshold(sweep_duration, items_per_stage, ready_dela
     return state.retry_cost + expected
 end
 
-local function expected_phase_cost(targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value)
+local function expected_phase_cost(targets, sweep_duration, items_per_stage, ready_delay, ack_delay, reroll_value)
     local period = sweep_duration * 2
     local total = 0
 
     for phase_index = 1, PHASE_SAMPLE_COUNT do
         local initial_ready = (phase_index - 0.5) * period / PHASE_SAMPLE_COUNT
-        local cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, startup_safe)
+        local cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, ack_delay)
 
         if reroll_value and cost - reroll_value - MIN_EXPECTED_SAVING > COMPARISON_EPSILON then
             total = total + reroll_value
@@ -399,12 +403,12 @@ end
 
 -- A known future board is valued at the measured start phase when one exists, else over the
 -- uniform phase distribution.
-local function board_value(targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value, next_phase)
+local function board_value(targets, sweep_duration, items_per_stage, ready_delay, ack_delay, reroll_value, next_phase)
     if not next_phase then
-        return expected_phase_cost(targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value)
+        return expected_phase_cost(targets, sweep_duration, items_per_stage, ready_delay, ack_delay, reroll_value)
     end
 
-    local cost = board_cost(targets, sweep_duration, items_per_stage, next_phase, ready_delay, startup_safe)
+    local cost = board_cost(targets, sweep_duration, items_per_stage, next_phase, ready_delay, ack_delay)
     if reroll_value and cost - reroll_value - MIN_EXPECTED_SAVING > COMPARISON_EPSILON then
         return reroll_value
     end
@@ -503,7 +507,7 @@ local function reconstructed_post_seed(minigame)
     return nil, matches == 0 and "no_match" or "ambiguous"
 end
 
-local function exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost, next_phase)
+local function exact_choice(minigame, post_seed, current_cost, ready_delay, ack_delay, remaining, retry_cost, next_phase)
     local stage_amount = minigame._stage_amount
     local items_per_stage = minigame._decode_symbols_items_per_stage
     local sweep_duration = minigame._decode_symbols_sweep_duration
@@ -526,10 +530,10 @@ local function exact_choice(minigame, post_seed, current_cost, ready_delay, star
         return false, nil, nil
     end
 
-    local future_value = board_value(boards[#boards].targets, sweep_duration, items_per_stage, ready_delay, startup_safe, nil, next_phase)
+    local future_value = board_value(boards[#boards].targets, sweep_duration, items_per_stage, ready_delay, ack_delay, nil, next_phase)
     for index = #boards - 1, 1, -1 do
         local reroll_value = retry_cost + future_value
-        future_value = board_value(boards[index].targets, sweep_duration, items_per_stage, ready_delay, startup_safe, reroll_value, next_phase)
+        future_value = board_value(boards[index].targets, sweep_duration, items_per_stage, ready_delay, ack_delay, reroll_value, next_phase)
     end
 
     local reroll_value = retry_cost + future_value
@@ -723,9 +727,9 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
     local items_per_stage = minigame._decode_symbols_items_per_stage
     local initial_ready = (game_time - minigame._decode_start_time) % (sweep_duration * 2)
     local ready_delay = stage_ready_delay(minigame)
-    local startup_safe = minigame._is_server ~= true
+    local ack_delay = stage_ack_delay(minigame)
 
-    local current_cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, startup_safe)
+    local current_cost = board_cost(targets, sweep_duration, items_per_stage, initial_ready, ready_delay, ack_delay)
     local should_reroll = false
     local next_board
     local alternative_cost
@@ -754,7 +758,7 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
             local retry_cost = exact_retry_cost(minigame)
             local next_phase = predicted_next_phase(minigame, true)
             state.next_phase = next_phase
-            should_reroll, next_board, alternative_cost = exact_choice(minigame, post_seed, current_cost, ready_delay, startup_safe, remaining, retry_cost, next_phase)
+            should_reroll, next_board, alternative_cost = exact_choice(minigame, post_seed, current_cost, ready_delay, ack_delay, remaining, retry_cost, next_phase)
             if next_board then
                 state.retry_cost = retry_cost
             end
@@ -765,7 +769,7 @@ function mod._ds_reroll_evaluate(minigame, game_time, sync_ready)
     if not should_reroll and not next_board then
         local next_phase = predicted_next_phase(minigame, false)
         state.next_phase = next_phase
-        local threshold = statistical_threshold(sweep_duration, items_per_stage, ready_delay, startup_safe, remaining, next_phase)
+        local threshold = statistical_threshold(sweep_duration, items_per_stage, ready_delay, ack_delay, remaining, next_phase)
         alternative_cost = threshold
         state.decision_mode = "statistical"
         state.seed_status = state.seed_status or (state.force_statistical and "prediction_mismatch" or "unavailable")

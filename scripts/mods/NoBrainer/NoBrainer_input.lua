@@ -43,141 +43,6 @@ local function _minigame_view_active()
 	return ui:view_active("scanner_display_view")
 end
 
-local function _decode(action, result, source)
-	if not _is_primary_hold_action(action) then return result end
-	if not _minigame_view_active() then return result end
-
-	if mod._ds_input then
-		return mod._ds_input(action, result, source)
-	end
-
-	return result
-end
-
-local function _expedition(action, result)
-	local is_submit_action = _is_primary_hold_action(action)
-	if not is_submit_action then return result end
-	if not S("enable_expedition_auto_solve") then return result end
-	local exp = mod._exp
-	if not exp or not exp.session_active or exp.timer <= 0 or not exp.active or not exp.gameplay then return result end
-	if (mod._exp_startup_delay or 0) > 0 then return result end
-
-	local now = mod._time("gameplay")
-	if not now then return result end
-	local stage = exp.stage
-
-	if mod._exp_press_until > now and is_submit_action then
-		return true
-	end
-	if mod._exp_release_until > now and is_submit_action then
-		return false
-	end
-
-	if mod._exp_submitted_stage and mod._exp_submitted_stage ~= stage then
-		if mod._exp_submitted_stage and mod._exp_handle_stage_changed then
-			mod._exp_handle_stage_changed(mod._exp_submitted_stage, stage)
-		else
-			mod._exp_submitted_stage = nil
-			mod._exp_submitted_until = 0
-		end
-
-		return result
-	elseif now < (mod._exp_submitted_until or 0) then
-		return result
-	else
-		mod._exp_submitted_stage = nil
-		mod._exp_submitted_until = 0
-	end
-
-	if result or not is_submit_action then
-		return result
-	end
-	if not _minigame_view_active() then
-		return result
-	end
-
-	if mod._exp_ready_to_submit and mod._exp_ready_to_submit(now) then
-		mod._exp_press_until = now + 0.08
-		mod._exp_release_until = mod._exp_press_until + 0.12
-		mod._exp_submitted_stage = stage
-		mod._exp_submitted_until = now + 1.2
-		return true
-	end
-	return result
-end
-
-
-local function _drill(action, result, source)
-	if not _is_primary_hold_action(action) and not _is_movement_action(action) then return result end
-	if not S("enable_drill_auto") then return result end
-	local drill = mod._drill
-	if not drill or not drill.session_active or not drill.session_ready or drill.timer <= 0 or not drill.active or not drill.gameplay then return result end
-	if (mod._drill_startup_delay or 0) > 0 then return result end
-	if not _minigame_view_active() then
-		return result
-	end
-
-	if _is_primary_hold_action(action) then
-		local now = mod._time("gameplay")
-		if not now then return result end
-		local stage = drill.stage
-		if mod._drill_press_until > now then
-			return true
-		end
-		if mod._drill_release_until > now then
-			return false
-		end
-		if result then return result end
-		if mod._drill_submitted_stage and mod._drill_submitted_stage ~= stage then
-			mod._drill_submitted_stage = nil
-			mod._drill_submitted_until = 0
-		elseif mod._drill_submitted_stage and now < (mod._drill_submitted_until or 0) then
-			return result
-		elseif mod._drill_submitted_stage then
-			mod._drill_submitted_stage = nil
-			mod._drill_submitted_until = 0
-		end
-		if mod._drill_cooldown > 0 then return result end
-		if not mod._drill_should_submit(now) then return result end
-
-		mod._drill_cooldown = 0.15
-		mod._drill_press_until = now + 0.08
-		mod._drill_release_until = mod._drill_press_until + 0.12
-		mod._drill_submitted_stage = stage
-		mod._drill_submitted_until = now + (mod._drill_submit_timeout or 1.2)
-		return true
-	end
-
-	if MOVE_ACTIONS[action] then
-		local now = mod._time("gameplay")
-		if not now or mod._drill_move_blocked and mod._drill_move_blocked(now) then return result end
-
-		local dir = source == "player_unit_input" and mod._drill_take_move_vec and mod._drill_take_move_vec(now)
-			or mod._drill_move_vec()
-		if not dir then return result end
-
-		return dir
-	end
-
-	local now = mod._time("gameplay")
-	if mod._drill_move_blocked and mod._drill_move_blocked(now) then
-		if action == "move_left" or action == "move_right"
-			or action == "move_forward" or action == "move_backward" then
-			return result
-		end
-	end
-
-	local dir = mod._drill_move_vec()
-	if not dir then return result end
-
-	if action == "move_left"      and dir.x < -0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.x)) end
-	if action == "move_right"     and dir.x >  0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.x)) end
-	if action == "move_forward"   and dir.y >  0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.y)) end
-	if action == "move_backward"  and dir.y < -0.15 then return math_max(type(result) == "number" and result or 0, math_abs(dir.y)) end
-
-	return result
-end
-
 local function _frequency(action, result)
 	if not _is_primary_hold_action(action) and not _is_movement_action(action) then return result end
 	if not S("enable_frequency_auto") then return result end
@@ -346,7 +211,8 @@ local function _scan(action, result)
 				mod._scan_holding = true
 				mod._scan_hold_target = target
 				mod._scan_hold_until = now + _scan_hold_duration()
-				mod._scan_cooldown = 0.3
+				mod._scan_retry_target = target
+				mod._scan_retry_until = now + 0.3
 				return true
 			end
 		end
@@ -356,15 +222,9 @@ end
 
 local function _any_minigame_active()
 	local bal = mod._bal
-	local exp = mod._exp
 	local freq = mod._freq
-	local drill = mod._drill
-	local ds = mod._ds
 
-	return (exp and exp.session_active and exp.active and (exp.timer or 0) > 0)
-		or (freq and freq.session_active and freq.active and (freq.timer or 0) > 0)
-		or (drill and drill.session_active and drill.session_ready and drill.active and (drill.timer or 0) > 0)
-		or (ds and ds.active and (ds.timer or 0) > 0)
+	return (freq and freq.session_active and freq.active and (freq.timer or 0) > 0)
 		or mod._scan_holding
 		or mod._scan_auto_pending
 		or (bal and bal.active and bal.enabled and (bal.timer or 0) > 0)
@@ -380,83 +240,11 @@ local function _apply_route(fn, action, result, source)
 	return next_result
 end
 
--- Search and Drill hold an outro before native should_exit; one normal cancel after
--- observed completion skips only that wait and uses the native walking/stop teardown.
-local FAST_EXIT_SETTINGS = {
-	decode_search = "enable_expedition_auto_solve",
-	drill = "enable_drill_auto",
-}
-local fast_exit_sent_key = nil
-
-mod._reg("runtime_reset", function()
-	fast_exit_sent_key = nil
-end)
-
-local function _local_minigame()
-	local player_manager = Managers.player
-	local player = player_manager and player_manager:local_player_safe(1)
-	local unit = player and player.player_unit
-	if not unit or not Unit.alive(unit) then return nil end
-
-	local csm = ScriptUnit.has_extension(unit, "character_state_machine_system")
-	if not csm or csm:current_state_name() ~= "minigame" then return nil end
-
-	local state = csm:current_state()
-	return state and state._minigame
-end
-
-local function _fast_exit(action, result, source)
-	if result or source ~= "input_service" or not _minigame_view_active() then return nil end
-
-	local mg = _local_minigame()
-	if not mg then return nil end
-	local extension = mg._minigame_extension
-	local setting = extension and FAST_EXIT_SETTINGS[extension:minigame_type()]
-	if not setting then return nil end
-
-	local key = tostring(mg)
-	if not mg:is_completed() then
-		if fast_exit_sent_key == key then fast_exit_sent_key = nil end
-		return nil
-	end
-	if fast_exit_sent_key == key or not S(setting) then return nil end
-
-	fast_exit_sent_key = key
-	return true
-end
-
--- Set only while HumanInputHandler serializes a fixed frame for the local player, so solvers
--- that decide per serialized frame never answer UI or other InputService readers.
-local sampling_frame = nil
-
-local function _finish_sampling(...)
-	sampling_frame = nil
-	return ...
-end
-
-local hooked_input_handlers = setmetatable({}, { __mode = "k" })
-mod:hook_require("scripts/managers/player/player_game_states/human_input_handler", function(Handler)
-	if hooked_input_handlers[Handler] then return end
-	hooked_input_handlers[Handler] = true
-	mod:hook(Handler, "fixed_update", function(func, self, dt, t, frame, input_service, yaw, pitch, roll)
-		if not mod._is_local_minigame_player(self._player) then
-			return func(self, dt, t, frame, input_service, yaw, pitch, roll)
-		end
-
-		sampling_frame = frame
-		return _finish_sampling(func(self, dt, t, frame, input_service, yaw, pitch, roll))
-	end)
-end)
-
 function mod._route_input(action, result, source)
 	local r = result
 
 	if not mod:is_enabled() then
 		return r
-	end
-
-	if action == "action_two_pressed" and _fast_exit(action, r, source) then
-		return true
 	end
 
 	if (action == "action_two_pressed" or action == "interact_pressed") and mod._ds_reroll_input then
@@ -471,26 +259,15 @@ function mod._route_input(action, result, source)
 		return r
 	end
 
-	if movement_action and source == "input_service" and sampling_frame and mod._exp_move_input then
-		local move = mod._exp_move_input(action, sampling_frame)
-		if move ~= nil then
-			return move
-		end
-	end
-
 	if not _any_minigame_active() then
 		return r
 	end
 
 	if primary_action then
-		r = _apply_route(_decode, action, r, source)
-		r = _apply_route(_expedition, action, r, source)
-		r = _apply_route(_drill, action, r, source)
 		r = _apply_route(_frequency, action, r, source)
 	end
 
 	if movement_action then
-		r = _apply_route(_drill, action, r, source)
 		r = _apply_route(_frequency, action, r, source)
 		r = _apply_route(_balance, action, r, source)
 	end
@@ -502,15 +279,13 @@ function mod._route_input(action, result, source)
 	return r
 end
 
-local function hook_fn(func, self, action)
-	local r = func(self, action)
-	local source = self and self.type == "Ingame" and "input_service" or "input_service_other"
-	return mod._route_input(action, r, source)
-end
-
-mod:hook(CLASS.InputService, "_get", hook_fn)
+-- InputService._get is hooked in NoBrainer_core.lua, which calls mod._route_input first.
 if rawget(CLASS.InputService, "_get_simulate") then
-	mod:hook(CLASS.InputService, "_get_simulate", hook_fn)
+	mod:hook(CLASS.InputService, "_get_simulate", function(func, self, action)
+		local r = func(self, action)
+		local source = self and self.type == "Ingame" and "input_service" or "input_service_other"
+		return mod._route_input(action, r, source)
+	end)
 end
 
 mod:hook_require("scripts/extension_systems/input/player_unit_input_extension", function(PlayerUnitInputExtension)

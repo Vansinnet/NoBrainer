@@ -9,6 +9,8 @@
 -- Realized time = retry cost per reroll + board_cost of the accepted board at its real phase.
 -- Run from the NoBrainer mod root:
 --   ..\..\..\tools\luajit\luajit.exe tests\decode_symbols_reroll_phase_harness.lua [TRIALS] [SEED] [RETRY_S]
+-- NB_READY_DELAY sets the solver's next-stage press delay (default 0.05 s: presses run ahead of receipts);
+-- NB_ACK_DELAY the stage receipt delay that limits presses in flight to two (default 0.05 s).
 local TRIALS, SEED, RETRY = tonumber(arg[1] or "20000"), tonumber(arg[2] or "1"), tonumber(arg[3] or "0.22")
 -- NB_RANDOM_PHASE=1 replays the 1.12.x behaviour (start phase uniform over the period) to check
 -- that the measured-phase path falls back instead of acting on a stale phase.
@@ -40,27 +42,26 @@ local function server_board(seed) -- mirrors MinigameDecodeSymbols board generat
   return { symbols = symbols, targets = targets, post_seed = seed }
 end
 
--- Copy of the module's board_cost (PRESS_LEAD 0.095, PRESS_GRACE 0.06, edge margin 0.03, client
--- startup_safe). Needed because an accepted reroll_limit board has no current_cost; every other
--- evaluation asserts that this copy matches the module's own value.
+-- Copy of the module's board_cost (press anywhere in the native hit window less 0.03 s, next stage READY s
+-- later). Needed because an accepted reroll_limit board has no current_cost; every other evaluation asserts
+-- that this copy matches the module's own value.
+local READY = tonumber(os.getenv("NB_READY_DELAY") or "0.05")
+-- Stage receipt delay: at most two presses await receipts (default 0.05 s, the 45 ms RTT rounded to 0.05).
+local ACK = tonumber(os.getenv("NB_ACK_DELAY") or "0.05")
 local function board_cost(targets, initial_ready)
-  local sweep, period, margin, ready_delay = 2, 4, 2 / 6, 0.2
+  local period, margin = 4, 2 / 6
+  local radius = margin * 0.5 - 0.03
   local function next_periodic(at, phase) if at <= phase then return phase end return phase + math.ceil((at - phase) / period) * period end
   local ready_time, start_ready = initial_ready, initial_ready
+  local before_last, last
   for stage = 1, #targets do
+    if before_last then ready_time = math.max(ready_time, before_last + ACK) end
     local center = (targets[stage] - 1) * margin
-    local press_time
-    if stage == 1 then
-      local phase = initial_ready % period
-      local cursor = phase > sweep and period - phase or phase
-      if margin * 0.5 - math.abs(cursor - center) >= 0.03 then press_time = ready_time end
-    end
-    if not press_time then
-      local f, r = next_periodic(ready_time - 0.06, center), next_periodic(ready_time - 0.06, period - center)
-      press_time = math.max(math.min(f, r) - 0.095, ready_time)
-    end
+    local f, r = next_periodic(ready_time - radius, center), next_periodic(ready_time - radius, period - center)
+    local press_time = math.max(math.min(f, r) - radius, ready_time)
     if stage == #targets then return press_time - start_ready end
-    ready_time = press_time + ready_delay
+    before_last, last = last, press_time
+    ready_time = press_time + READY
   end
 end
 
@@ -83,7 +84,8 @@ local function load_variant(uniform)
   mod._S = function() return true end
   mod._time = function() return now end
   mod._ds_network_rtt = function() return 0.045 end
-  mod._ds_stage_ready_delay = function() return 0.2 end
+  mod._ds_stage_ready_delay = function() return READY end
+  mod._ds_stage_ack_delay = function() return ACK end
   _G.get_mod = function() return mod end
   _G.Unit = { alive = function() return true end }
   _G.Managers = { ui = { view_active = function() return false end },

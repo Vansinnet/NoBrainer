@@ -12,6 +12,8 @@ A Darktide Mod Framework (DMF) mod that assists with several in-game minigames.
 - Auspex Scan highlights eligible targets and can confirm scans automatically.
 - Skitarius Servo Skull can automatically order an available servo skull to hack nearby terminals.
 
+Decode Symbols, Decode Search and Drill use the same solvers as BetterBrainer 1.0.3: every decision is made once per input frame sent to the server, and against a remote server Search and Drill press only after the server has shown that it processed later, timely input, so lag costs time but not a wrong press. At speed 5, Search and Drill send the next stage's first move during the stage transition.
+
 The mod offers English, Simplified Chinese, Traditional Chinese, and Russian localization. Feature settings can be changed in the DMF options menu.
 
 ## Installation

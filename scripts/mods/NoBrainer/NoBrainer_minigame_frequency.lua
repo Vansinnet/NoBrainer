@@ -21,7 +21,7 @@ local RAD_180       = math.rad(180)
 local RAD_90        = math.rad(90)
 local RAD_NEG90     = math.rad(-90)
 local FREQUENCY_MIN_STRENGTH = 0.45
-local FREQUENCY_MAX_STARTUP_EXTRA = 0.25
+local FREQUENCY_MAX_STARTUP_DELAY = 0.75
 local FREQUENCY_MAX_REACTION_DELAY = 1.00
 local FREQUENCY_MAX_CONFIRM_DELAY = 1.20
 local FREQUENCY_MAX_COOLDOWN_EXTRA = 0.12
@@ -44,6 +44,24 @@ local frequency_restart_stage_fresh = false
 local frequency_restart_target_fresh = false
 
 mod._freq.session_active = false
+
+-- A client acts only after its own start plus the stage and target receipts of the opening (BetterBrainer
+-- 1.0.2): a retained board from an earlier session is never steered or submitted.
+local openings = setmetatable({}, { __mode = "k" })
+
+local function _opening(mg)
+	local receipt = openings[mg]
+	if not receipt then
+		receipt = {}
+		openings[mg] = receipt
+	end
+	return receipt
+end
+
+local function _fresh(mg)
+	local receipt = openings[mg]
+	return mg._is_server == true or receipt ~= nil and receipt.started and receipt.stage and receipt.target or false
+end
 
 local function _reset_frequency_timing()
 	mod._freq_cooldown = 0
@@ -70,11 +88,13 @@ local function _reset_snapshot()
     freq.on_target = false
     freq.stage = nil
     freq.key = nil
+    freq.fresh = false
 end
 
 local function _snapshot_fresh()
     local freq = mod._freq
     return freq and freq.session_active and freq.active and freq.timer > 0 and freq.gameplay and not freq.completed
+        and freq.fresh
 end
 
 local function _is_active_frequency_mg(mg)
@@ -156,6 +176,7 @@ local function _sample_frequency(mg, allow_server_fallback)
     freq.completed = completed
     freq.stage = stage
     freq.key = key
+    freq.fresh = _fresh(mg)
     freq.current_x = current and current.x or nil
     freq.current_y = current and current.y or nil
     freq.target_x = target and target.x or nil
@@ -178,7 +199,7 @@ local function _sample_frequency(mg, allow_server_fallback)
 
     local now = mod._time("gameplay")
     if allow_server_fallback and frequency_active and freq.session_active and _is_active_frequency_mg(mg)
-        and now and mg._is_server and gameplay and not completed and mod._freq_startup_delay <= 0
+        and now and mg._is_server and gameplay and not completed and mod._freq_startup_delay <= 0 and freq.fresh
     then
         local on_target = freq.on_target
         local move_vec = mod._freq_move_vec and mod._freq_move_vec()
@@ -258,7 +279,7 @@ end)
 
 function mod._freq_move_vec()
 	local freq = mod._freq
-	if not freq or not freq.session_active or freq.timer <= 0 or not freq.active or freq.completed then return nil end
+	if not freq or not freq.session_active or freq.timer <= 0 or not freq.active or freq.completed or not freq.fresh then return nil end
 	if not freq.gameplay then
 		return nil
     end
@@ -371,14 +392,22 @@ local function _arm_frequency_session(mg, restart_until)
 	frequency_restart_stage_fresh = false
 	frequency_restart_target_fresh = false
 	mod._freq.session_active = true
+	if not mg._is_server then _opening(mg).started = true end
 	_reset_snapshot()
 	_sample_frequency(mg, false)
 	mod._freq_scale = mod._speed_scale("frequency_solve_speed")
 	_reset_frequency_timing()
-	mod._freq_startup_delay = 0.5 + mod._speed_pacing("frequency_solve_speed") * FREQUENCY_MAX_STARTUP_EXTRA
+	mod._freq_startup_delay = mod._speed_pacing("frequency_solve_speed") * FREQUENCY_MAX_STARTUP_DELAY
 end
 
 mod:hook_safe("MinigameFrequency", "start", function(self, player)
+	if mod._is_local_minigame_player(player) then
+		if openings[self] and openings[self].foreign then openings[self] = nil end
+		_opening(self).started = true
+	elseif player or not (frequency_active and _is_active_frequency_mg(self)) then
+		openings[self] = { foreign = true }
+	end
+
 	if not mod._is_local_minigame_player(player) then
 		if frequency_active and _is_active_frequency_mg(self)
 			or frequency_restart_key and frequency_restart_key == tostring(self)
@@ -428,6 +457,12 @@ mod:hook_safe("MinigameFrequency", "stop", function(self, ...)
 		and now <= frequency_restart_until
 	local restart_until = frequency_restart_until
 
+	-- A continuing argumentless receipt (including the server stop after a quick restart) keeps the
+	-- opening; a real stop retires it.
+	if arg_count > 0 or not active and frequency_restart_key ~= key then
+		openings[self] = nil
+	end
+
 	if active or frequency_restart_key == key then
 		_freq_cleanup(not frequency_completed and "stop" or nil)
 	end
@@ -459,6 +494,7 @@ mod:hook_safe("MinigameFrequency", "generate_board", function(self)
 end)
 
 mod:hook_safe("MinigameFrequency", "set_current_stage", function(self, stage)
+	if self._is_server == false then _opening(self).stage = true end
 	if frequency_restart_key == tostring(self) and frequency_restart_stop_seen and frequency_restart_board_fresh and stage == 1 then
 		frequency_restart_stage_fresh = true
 		frequency_restart_target_fresh = false
@@ -466,6 +502,7 @@ mod:hook_safe("MinigameFrequency", "set_current_stage", function(self, stage)
 end)
 
 mod:hook_safe("MinigameFrequency", "set_target_frequency", function(self)
+	if self._is_server == false then _opening(self).target = true end
 	if frequency_restart_key == tostring(self) and frequency_restart_stop_seen and frequency_restart_board_fresh and frequency_restart_stage_fresh then
 		frequency_restart_target_fresh = true
 	end
@@ -537,6 +574,7 @@ end
 
 local function on_round_end()
 	_freq_cleanup(frequency_active and "round_end" or nil)
+	table.clear(openings)
 end
 
 mod._reg("update",          on_update)

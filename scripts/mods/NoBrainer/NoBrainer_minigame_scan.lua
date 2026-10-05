@@ -3,6 +3,7 @@ local S = mod._S
 
 local scannable_units = {}
 local highlighted_units = {}
+local SCAN_RETRY_DELAY = 0.3
 local last_target = nil
 local last_completed_target = nil
 local cached_player_unit = nil
@@ -78,6 +79,8 @@ local function _reset_scan_input_state()
     mod._scan_cooldown = 0
     mod._scan_refresh_timer = nil
     mod._current_action = ""
+    mod._scan_retry_target = nil
+    mod._scan_retry_until = 0
     last_target = nil
     last_completed_target = nil
 end
@@ -177,10 +180,6 @@ end)
 
 
 mod._reg("update", function(dt)
-    if mod._scan_cooldown > 0 then
-        mod._scan_cooldown = math.max(0, mod._scan_cooldown - dt)
-    end
-
     if S("enable_scan") then
         mod._scan_refresh_timer = (mod._scan_refresh_timer or 0) + dt
         if mod._scan_refresh_timer > 1.0 then
@@ -199,19 +198,24 @@ mod._reg("update", function(dt)
     local previous_action = mod._current_action
     local current_action = wac.current_action_name
     if previous_action == "action_scan_confirm" and current_action ~= "action_scan_confirm" then
+        if not last_completed_target then
+            -- An interrupted confirm delays only a retry of the same target (BetterBrainer 1.0.2).
+            local now = mod._time("gameplay")
+            if mod._scan_hold_target and now then
+                mod._scan_retry_target = mod._scan_hold_target
+                mod._scan_retry_until = math.max(mod._scan_retry_until or 0, now + SCAN_RETRY_DELAY)
+            end
+            last_target = nil
+        end
         mod._scan_holding = false
         mod._scan_hold_until = 0
         mod._scan_hold_target = nil
-        if not last_completed_target then
-            last_target = nil
-        end
     end
 
     mod._current_action = current_action
 
 	if current_action == "action_scan" then
         if mod._scan_auto_pending then return end
-        if mod._scan_cooldown > 0 then return end
 
         local scan = _scanning_component(unit_data_ext)
         if not scan then
@@ -222,7 +226,10 @@ mod._reg("update", function(dt)
 		if target and last_completed_target and target ~= last_completed_target then
 			last_completed_target = nil
 		end
-		if scan.is_active and target and los and target ~= last_target and target ~= last_completed_target then
+		local retry_wait = target ~= nil and target == mod._scan_retry_target
+			and (mod._time("gameplay") or 0) < (mod._scan_retry_until or 0)
+		if scan.is_active and target and los and target ~= last_target and target ~= last_completed_target
+			and not retry_wait then
 			mod._scan_auto_pending = true
 			last_target = target
         end

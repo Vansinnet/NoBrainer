@@ -1,676 +1,362 @@
-local mod = get_mod("NoBrainer")
-local S = mod._S
-
-local MinigameSettings, DecodeSymbolsViewSettings, UIWidget
-local function _deps()
-	if not MinigameSettings then
-		MinigameSettings = require("scripts/settings/minigame/minigame_settings")
-		DecodeSymbolsViewSettings = require("scripts/ui/views/scanner_display_view/scanner_display_view_decode_symbols_settings")
-		UIWidget = require("scripts/managers/ui/ui_widget")
-	end
-end
-
-local PREVIEW_DECODE_MAX_GRID_HEIGHT = 920
-
-local _cached_layout_mg = nil
-local _cached_layout = nil
-local function _decode_layout(minigame)
-	if _cached_layout_mg == minigame and _cached_layout then return _cached_layout end
-	_deps()
-	local bw = DecodeSymbolsViewSettings.decode_symbol_widget_size
-	local bs = DecodeSymbolsViewSettings.decode_symbol_spacing
-	local sa = minigame and minigame._stage_amount or MinigameSettings.decode_symbols_stage_amount
-	local ips = MinigameSettings.decode_symbols_items_per_stage
-	local th = bw[2] * sa + bs * (sa - 1)
-	local scale = th > PREVIEW_DECODE_MAX_GRID_HEIGHT and PREVIEW_DECODE_MAX_GRID_HEIGHT / th or 1
-	local ws = { bw[1] * scale, bw[2] * scale }
-	local sp = bs * scale
-
-	_cached_layout = {
-		stage_amount      = sa,
-		widget_size       = ws,
-		spacing           = sp,
-		starting_offset_x = -(ws[1] * ips + sp * (ips - 1)) * 0.5,
-		starting_offset_y = -(ws[2] * sa + sp * (sa - 1)) * 0.5,
-	}
-	_cached_layout_mg = minigame
-	return _cached_layout
-end
-
-local HIGHLIGHT = { 100, 255, 255, 165 }
-
-local function _ensure_highlight_widgets(view, count, widget_size)
-	if count <= 0 then
-		view._nb_dh = nil; view._nb_dh_size = nil
-		return nil
-	end
-
-	local w = view._nb_dh
-	local prev_sz = view._nb_dh_size
-
-	if w and #w == count and prev_sz
-		and prev_sz[1] == widget_size[1] and prev_sz[2] == widget_size[2]
-	then
-		return w
-	end
-
-	_deps()
-	w = {}
-	for i = 1, count do
-		local def = UIWidget.create_definition({{
-			pass_type = "texture", style_id = "highlight",
-			value     = "content/ui/materials/backgrounds/scanner/scanner_decode_symbol_highlight",
-			style     = { hdr = true, color = HIGHLIGHT },
-		}}, "center_pivot", nil, widget_size)
-		w[i] = UIWidget.init("nb_dh_" .. i, def)
-	end
-	view._nb_dh = w
-	view._nb_dh_size = { widget_size[1], widget_size[2] }
-	return w
-end
-
-mod:hook_require("scripts/ui/views/scanner_display_view/minigame_decode_symbols_view", function(View)
-	mod:hook_safe(View, "draw_widgets", function(self, dt, t, input_service, ui_renderer)
-		if not S("enable_decode_highlight") then
-			return
-		end
-			_deps()
-			local ext = self._minigame_extension
-			if not ext then
-				return
-			end
-
-			local mg = ext:minigame(MinigameSettings.types.decode_symbols)
-			if not mg then
-				return
-			end
-
-			local targets = mg._decode_targets
-		if not targets or #targets == 0 then
-			return
-		end
-
-		local stage = mg:current_stage()
-		if not stage then
-			return
-		end
-		local limit = math.min(#targets, stage + 3)
-			local count = limit - stage
-			if count <= 0 then
-				self._nb_dh = nil
-                self._nb_dh_size = nil
-				return
-			end
-
-		local layout = _decode_layout(mg)
-		local ws = layout.widget_size
-
-		local w = _ensure_highlight_widgets(self, count, ws)
-		if not w then return end
-
-		for i = stage + 1, limit do
-			local wi = w[i - stage]
-			wi.offset[1] = layout.starting_offset_x + (ws[1] + layout.spacing) * (targets[i] - 1)
-			wi.offset[2] = layout.starting_offset_y + (ws[2] + layout.spacing) * (i - 1)
-			wi.offset[3] = 5
-			wi.style.highlight.color = HIGHLIGHT
-			UIWidget.draw(wi, ui_renderer)
-		end
-	end)
-end)
-
-local PRESS_DURATION = 0.08
-local RELEASE_DURATION = 0.12
-local PRESS_LEAD = 0.095
-local PRESS_GRACE = 0.060
-local SUBMIT_TIMEOUT = 1.2
-local SYNC_STABILITY_DURATION = 0.12
-local SYNC_TARGET_EDGE_MARGIN = 0.03
-local MIN_STAGE_READY_DELAY = PRESS_DURATION + RELEASE_DURATION
 local STAGE_ACK_ALPHA = 0.3
-local PRIMARY_HOLD_ACTIONS = {
-	action_one_hold = true,
-	interact_hold = true,
-	interact_primary_hold = true,
-	jump_held = true,
-}
 
-mod._ds_submitted_stage = nil
-mod._ds_submitted_until = 0
-mod._ds_press_until = 0
-mod._ds_release_until = 0
-mod._ds_submit_time = nil
-mod._ds_stage_ack_cost = MIN_STAGE_READY_DELAY
-mod._ds_stage_ack_samples = 0
-mod._ds_last_stage_ack = nil
-local decode_active = false
-local active_decode_key = nil
-local decode_completed = false
-local decode_previous_start_time = nil
-local decode_waiting_for_sync = false
-local decode_sync_candidate_key = nil
-local decode_sync_candidate_start_time = nil
-local decode_sync_candidate_target = nil
-local decode_sync_candidate_since = nil
-local decode_synced_key = nil
-local decode_synced_start_time = nil
-local decode_synced_target = nil
-local decode_sync_ready_at = nil
-local looks_like_decode_symbols
+return function(ctx)
+    local mod = ctx.mod
+    local module = {}
+    local game, previous_start, board_start, board_target
+    local candidate_start, candidate_target, candidate_since
+    local waiting = false
+    local pulse, pending_stages, pending_times = {}, {}, {}
+    local sent_frame, predicted_stage, observed_stage, observed_mistakes
+    local ahead = true
+    local observed_at
+    local views = setmetatable({}, { __mode = "k" })
+    local stopped_clocks = setmetatable({}, { __mode = "k" })
+    local clock_receipts = setmetatable({}, { __mode = "k" })
+    local board_receipts = setmetatable({}, { __mode = "k" })
+    local holds = { action_one_hold = true, interact_hold = true, interact_primary_hold = true, jump_held = true }
 
-function mod._ds_network_rtt()
-	local connection = Managers.connection
-	local network = rawget(_G, "Network")
-	if not connection or not connection.host or not network or not network.ping then
-		return nil
-	end
-
-	local host_ok, host = pcall(connection.host, connection)
-	if not host_ok or not host then
-		return nil
-	end
-
-	local ping_ok, rtt = pcall(network.ping, host)
-
-	return ping_ok and type(rtt) == "number" and rtt >= 0 and rtt or nil
-end
-
-function mod._ds_stage_ready_delay(server)
-	if server then
-		return MIN_STAGE_READY_DELAY
-	end
-
-	return math.max(MIN_STAGE_READY_DELAY, mod._ds_stage_ack_cost or 0, mod._ds_network_rtt() or 0)
-end
-
-local function observe_stage_ack(now)
-	local submitted_at = mod._ds_submit_time
-	local observed = submitted_at and now - submitted_at
-	if not observed or observed <= 0 or observed >= SUBMIT_TIMEOUT then
-		return
-	end
-
-	local current = mod._ds_stage_ack_cost or MIN_STAGE_READY_DELAY
-	mod._ds_last_stage_ack = observed
-	mod._ds_stage_ack_cost = observed > current
-		and observed
-		or current + (observed - current) * STAGE_ACK_ALPHA
-	mod._ds_stage_ack_samples = (mod._ds_stage_ack_samples or 0) + 1
-end
-
-local function clear_sync_tracking()
-	decode_sync_candidate_key = nil
-	decode_sync_candidate_start_time = nil
-	decode_sync_candidate_target = nil
-	decode_sync_candidate_since = nil
-	decode_synced_key = nil
-	decode_synced_start_time = nil
-	decode_synced_target = nil
-	decode_sync_ready_at = nil
-end
-
-local function reset_snapshot()
-	local ds = mod._ds
-	ds.timer = 0
-	ds.active = false
-	ds.completed = false
-	ds.server = false
-	ds.stage = nil
-	ds.start_time = nil
-	ds.target = nil
-	ds.items_per_stage = nil
-	ds.sweep_duration = nil
-	ds.key = nil
-end
-
-local function sample_decode_symbols(minigame)
-	local ds = mod._ds
-	if not ds then return end
-	local key = minigame and tostring(minigame) or nil
-
-	if key and ds.key and ds.key ~= key then
-		mod._ds_submitted_stage = nil
-		mod._ds_submitted_until = 0
-		mod._ds_press_until = 0
-		mod._ds_release_until = 0
-		mod._ds_submit_time = nil
-	end
-
-	if not looks_like_decode_symbols(minigame) then
-		reset_snapshot()
-		return
-	end
-
-	local stage = minigame.current_stage and minigame:current_stage() or minigame._current_stage
-	local targets = minigame._decode_targets
-	ds.timer = 0.075
-	ds.active = true
-	ds.completed = minigame.is_completed and minigame:is_completed() == true or false
-	ds.server = minigame._is_server == true
-	ds.stage = stage
-	ds.start_time = minigame.start_time and minigame:start_time() or minigame._decode_start_time
-	ds.target = targets and stage and targets[stage] or nil
-	ds.items_per_stage = minigame._decode_symbols_items_per_stage
-	ds.sweep_duration = minigame._decode_symbols_sweep_duration
-	ds.key = key
-
-	if decode_active and not ds.server and not decode_waiting_for_sync and stage == 1
-		and decode_synced_key ~= nil
-		and (key ~= decode_synced_key or ds.start_time ~= decode_synced_start_time or ds.target ~= decode_synced_target)
-	then
-		decode_waiting_for_sync = true
-		clear_sync_tracking()
-		mod._ds_submitted_stage = nil
-		mod._ds_submitted_until = 0
-		mod._ds_press_until = 0
-		mod._ds_release_until = 0
-		mod._ds_submit_time = nil
-	end
-
-end
-
-local function is_active_decode_symbols(minigame)
-	return decode_active and minigame ~= nil and active_decode_key == tostring(minigame)
-end
-
-local function ds_reset(reason)
-	local keep_waiting_for_sync = reason == "stop" and decode_waiting_for_sync
-
-	if mod._ds and mod._ds.start_time then
-		decode_previous_start_time = mod._ds.start_time
-	end
-
-	decode_active = false
-	active_decode_key = nil
-	decode_completed = reason == "complete"
-	decode_waiting_for_sync = keep_waiting_for_sync
-	clear_sync_tracking()
-	reset_snapshot()
-	mod._ds_submitted_stage = nil
-	mod._ds_submitted_until = 0
-	mod._ds_press_until = 0
-	mod._ds_release_until = 0
-	mod._ds_submit_time = nil
-end
-
-local function game_time()
-	return mod._time("gameplay")
-end
-
-local function scanner_view_active()
-	local ui = Managers.ui
-	return ui and ui:view_active("scanner_display_view")
-end
-
-local function next_center_delta(sweep_duration, now, start_time, target, margin)
-	if not sweep_duration or sweep_duration <= 0 then return nil end
-
-	local period = sweep_duration * 2
-	local center = (target - 1) * margin
-	local mirror = period - center
-	local phase = (now - start_time) % period
-	local delta_a = center - phase
-	local delta_b = mirror - phase
-
-	if delta_a < -PRESS_GRACE then delta_a = delta_a + period end
-	if delta_b < -PRESS_GRACE then delta_b = delta_b + period end
-
-	return math.abs(delta_a) < math.abs(delta_b) and delta_a or delta_b
-end
-
-local function decode_sync_ready(now, minigame)
-	if not decode_waiting_for_sync then
-		return true
-	end
-
-	local ds = mod._ds
-	local stage = ds and ds.stage
-	local start_time = ds and ds.start_time
-	local target = ds and ds.target
-	local start_time_changed = decode_previous_start_time == nil or start_time ~= decode_previous_start_time
-
-    if stage ~= 1 or not start_time_changed then
-		decode_sync_candidate_key = nil
-		decode_sync_candidate_start_time = nil
-		decode_sync_candidate_target = nil
-		decode_sync_candidate_since = nil
-        return false
+    local function clear_press()
+        table.clear(pulse)
+        table.clear(pending_stages)
+        table.clear(pending_times)
+        sent_frame, predicted_stage, observed_stage, observed_mistakes = nil, nil, nil, nil
+        ahead = true
     end
 
-    if minigame and mod._ds_reroll_predicted_sync_ready
-        and mod._ds_reroll_predicted_sync_ready(minigame, decode_previous_start_time)
-    then
-        decode_waiting_for_sync = false
-        decode_synced_key = ds.key
-        decode_synced_start_time = start_time
-        decode_synced_target = target
-        decode_sync_ready_at = now
+    -- Submit-to-stage receipt delay (Smart Seed Reroll falls back to it while presses cannot run ahead).
+    local function observe_stage_ack(sent)
+        local t = ctx.time()
+        local observed = t and sent and t - sent
+        if not observed or observed <= 0 or observed >= 1.2 then return end
+        local current = mod._ds_stage_ack_cost or observed
+        mod._ds_last_stage_ack = observed
+        mod._ds_stage_ack_cost = observed > current and observed or current + (observed - current) * STAGE_ACK_ALPHA
+        mod._ds_stage_ack_samples = (mod._ds_stage_ack_samples or 0) + 1
+    end
+
+    local function stage_received(mg, stage)
+        if game ~= mg or not ctx.settings.enable_decode_auto then return end
+        local expected = pending_stages[1]
+        if expected then
+            if not mg._is_server then observe_stage_ack(pending_times[1]) end
+            if stage ~= expected + 1 then ahead = false end
+            table.remove(pending_stages, 1)
+            table.remove(pending_times, 1)
+        elseif observed_stage and stage ~= observed_stage then
+            ahead = false
+        end
+        observed_stage = stage
+        if not ahead or #pending_stages == 0 then predicted_stage = stage end
+    end
+
+    function module.reset(reason)
+        if reason == "gameplay_exit" then
+            mod._ds_stage_ack_cost, mod._ds_stage_ack_samples, mod._ds_last_stage_ack = nil, 0, nil
+        end
+        if reason == "session_end" and game then
+            stopped_clocks[game] = board_start or game._decode_start_time
+            clock_receipts[game] = nil
+            board_receipts[game] = nil
+        end
+        game, previous_start, board_start, board_target = nil, nil, nil, nil
+        candidate_start, candidate_target, candidate_since = nil, nil, nil
+        waiting, observed_at = false, nil
+        views = setmetatable({}, { __mode = "k" })
+        clear_press()
+        if reason ~= "session_end" then
+            stopped_clocks = setmetatable({}, { __mode = "k" })
+            clock_receipts = setmetatable({}, { __mode = "k" })
+            board_receipts = setmetatable({}, { __mode = "k" })
+        end
+    end
+
+    function module.start(mg, player)
+        if not player then
+            if ctx.session_valid(mg) then return end
+            if game == mg then module.reset("ownership_changed") end
+            if not mg._is_server then clock_receipts[mg] = false end
+            board_receipts[mg] = nil
+            return
+        end
+        if not ctx.is_local_player(player) then
+            if game == mg then module.reset("ownership_changed") end
+            if not mg._is_server then clock_receipts[mg] = false end
+            board_receipts[mg] = nil
+            return
+        end
+        -- Own setup RPCs can precede local unit initialization; foreign starts/real stops retire them.
+        local receipt = clock_receipts[mg]
+        previous_start = not mg._is_server and mg._decode_start_time
+            or stopped_clocks[mg] or (game == mg and board_start or nil)
+        if receipt and receipt.start == mg._decode_start_time and receipt.symbols == mg._symbols then
+            previous_start = nil
+        end
+        clock_receipts[mg] = nil
+        game = mg
+        board_start, board_target = nil, nil
+        candidate_start, candidate_target, candidate_since = nil, nil, nil
+        waiting, observed_at = not mg._is_server, nil
+        clear_press()
+    end
+
+    function module.stop(mg, stop_arg)
+        if stop_arg == nil and mg._is_server == false and ctx.session_valid(mg) then
+            -- Native stop disarms the edge, but continuing board receipts still own pending predictions.
+            table.clear(pulse)
+            return
+        end
+        clock_receipts[mg] = nil
+        board_receipts[mg] = nil
+        if game == mg then
+            stopped_clocks[mg] = board_start or mg._decode_start_time
+            game, observed_at = nil, nil
+            clear_press()
+        end
+    end
+
+    local function board_ready(mg, start)
+        local receipt = board_receipts[mg]
+        if not receipt or receipt.symbols ~= mg._symbols or receipt.start ~= start or not receipt.stage then
+            return false
+        end
+        for i = 1, mg._stage_amount do
+            if receipt.targets[i] == nil or receipt.targets[i] ~= mg._decode_targets[i] then return false end
+        end
         return true
     end
 
-	if decode_sync_candidate_key ~= ds.key
-		or decode_sync_candidate_start_time ~= start_time
-		or decode_sync_candidate_target ~= target
-	then
-		decode_sync_candidate_key = ds.key
-		decode_sync_candidate_start_time = start_time
-		decode_sync_candidate_target = target
-		decode_sync_candidate_since = now
-		return false
-	end
-
-	local stable_for = now - decode_sync_candidate_since
-	if stable_for < SYNC_STABILITY_DURATION then
-		return false
-	end
-
-	decode_waiting_for_sync = false
-	decode_synced_key = ds.key
-	decode_synced_start_time = start_time
-	decode_synced_target = target
-	decode_sync_ready_at = now
-
-	return true
-end
-
-local function should_press_decode(now)
-	local ds = mod._ds
-	if not ds or ds.timer <= 0 or not ds.active then
-		return false
-	end
-	if ds.completed then
-		return false
-	end
-
-	local stage = ds.stage
-	local start_time = ds.start_time
-	local target = ds.target
-	local items_per_stage = ds.items_per_stage
-	local sweep_duration = ds.sweep_duration
-
-	if not stage or not start_time or not target
-		or not items_per_stage or items_per_stage <= 1
-		or not sweep_duration or sweep_duration <= 0 then
-		return false
-	end
-
-	local was_waiting_for_sync = decode_waiting_for_sync
-	if not decode_sync_ready(now) then return false end
-	local sync_ready_now = was_waiting_for_sync
-		or decode_sync_ready_at ~= nil and now - decode_sync_ready_at <= SYNC_STABILITY_DURATION
-
-	if mod._ds_reroll_blocks_solver and mod._ds_reroll_blocks_solver() then
-		return false
-	end
-
-	if mod._ds_submitted_stage ~= stage then
-		if mod._ds_submitted_stage ~= nil then
-			observe_stage_ack(now)
-		end
-		mod._ds_submitted_stage = nil
-		mod._ds_submitted_until = 0
-		mod._ds_submit_time = nil
-	elseif now < mod._ds_submitted_until then
-		return false
-	end
-
-	local margin = sweep_duration / (items_per_stage - 1)
-	local delta = next_center_delta(sweep_duration, now, start_time, target, margin)
-	local target_half_width = margin * 0.5
-	local edge_margin = delta and target_half_width - math.abs(delta) or nil
-	local in_trigger_window = delta and delta <= PRESS_LEAD and delta >= -PRESS_GRACE
-	local in_safe_startup_target = sync_ready_now and edge_margin and edge_margin >= SYNC_TARGET_EDGE_MARGIN
-
-	if not in_trigger_window and not in_safe_startup_target then
-		return false
-	end
-	return true
-end
-
-local function submit_decode(now)
-	local stage = mod._ds and mod._ds.stage
-	mod._ds_submitted_stage = stage
-	mod._ds_submitted_until = now + SUBMIT_TIMEOUT
-	mod._ds_press_until = now + PRESS_DURATION
-	mod._ds_release_until = mod._ds_press_until + RELEASE_DURATION
-	mod._ds_submit_time = now
-end
-
-looks_like_decode_symbols = function(minigame)
-	return minigame
-		and minigame._decode_symbols_sweep_duration ~= nil
-		and minigame._decode_symbols_items_per_stage ~= nil
-		and minigame._decode_targets ~= nil
-end
-
-function mod._ds_input(action, result, source)
-	if not S("enable_decode_auto") then return result end
-	local ds = mod._ds
-	if not ds or ds.timer <= 0 or not ds.active then return result end
-	if not PRIMARY_HOLD_ACTIONS[action] then return result end
-
-	local now = game_time()
-	if not now then return result end
-
-	if mod._ds_press_until > now then
-		return true
-	end
-	if mod._ds_release_until > now then
-		return false
-	end
-	if result then return result end
-	if source ~= "input_service" then return result end
-	if not should_press_decode(now) then return result end
-
-	submit_decode(now)
-	return true
-end
-
-mod:hook_safe("MinigameDecodeSymbols", "start", function(self, player)
-	if not mod._is_local_minigame_player(player) then
-		if mod._ds_reroll_abort then
-			mod._ds_reroll_abort(self)
-		end
-		if decode_active and is_active_decode_symbols(self) then
-			ds_reset("ownership_transferred")
-		end
-		return
-	end
-
-	if S("enable_decode_auto") then
-		if mod._ds and mod._ds.start_time then
-			decode_previous_start_time = mod._ds.start_time
-		end
-		reset_snapshot()
-		clear_sync_tracking()
-		mod._ds_submitted_stage = nil
-		mod._ds_submitted_until = 0
-		mod._ds_press_until = 0
-		mod._ds_release_until = 0
-		mod._ds_submit_time = nil
-		decode_active = true
-		active_decode_key = tostring(self)
-		decode_completed = false
-		decode_waiting_for_sync = self._is_server ~= true
-	end
-
-	if mod._ds_reroll_start then
-		mod._ds_reroll_start(self)
-	end
-end)
-mod:hook_safe("MinigameDecodeSymbols", "stop", function(self, stop_arg)
-	if mod._ds_reroll_stop then
-		mod._ds_reroll_stop(self, stop_arg)
-	end
-    if S("enable_decode_auto") and is_active_decode_symbols(self) then
-        ds_reset(not decode_completed and "stop" or nil)
+    local function sync_ready(mg, t)
+        local start, stage = mg._decode_start_time, mg._current_stage
+        local target = mg._decode_targets and mg._decode_targets[1]
+        if not start or not target then return false end
+        if not waiting and board_start and (start ~= board_start or target ~= board_target) then
+            waiting = not mg._is_server
+            candidate_since = nil
+            clear_press()
+        end
+        if waiting then
+            if stage ~= 1 or start == previous_start then
+                candidate_since = nil
+                return false
+            end
+            -- A rerolled board that exactly matches the seed prediction is also complete and fresh.
+            local predicted = mod._ds_reroll_predicted_sync_ready and mod._ds_reroll_predicted_sync_ready(mg, previous_start)
+            if not predicted and not board_ready(mg, start) then
+                if not candidate_since or candidate_start ~= start or candidate_target ~= target then
+                    candidate_start, candidate_target, candidate_since = start, target, t
+                    return false
+                end
+                if t - candidate_since < 0.12 then return false end
+            end
+            waiting = false
+            clock_receipts[mg] = nil
+            board_receipts[mg] = nil
+        end
+        board_start, board_target = start, target
+        return true
     end
-end)
 
-mod:hook_safe("MinigameDecodeSymbols", "complete", function(self)
-	if mod._ds_reroll_complete then
-		mod._ds_reroll_complete(self)
-	end
-    if S("enable_decode_auto") and is_active_decode_symbols(self) then
-        ds_reset("complete")
+    function module.observe(mg, t)
+        if not t or not mg then return end
+        if game ~= mg then
+            -- Rearm after enabling/settings changes in an already open session.
+            game, previous_start = mg, stopped_clocks[mg]
+            board_start, board_target = nil, nil
+            candidate_since = nil
+            -- A later synchronized stage proves this is an existing board, not a stale stage-1 restart.
+            waiting = not mg._is_server and (not mg._current_stage or mg._current_stage == 1)
+            clear_press()
+        end
+        observed_at = t
+        if not ctx.settings.enable_decode_auto then clear_press(); return end
+        if mg:is_completed() then clear_press(); return end
+        sync_ready(mg, t)
+        if observed_stage and mg._current_stage ~= observed_stage
+            or observed_mistakes and mg._mistakes ~= observed_mistakes
+            or pending_times[1] and (t < pending_times[1] or t - pending_times[1] >= 1.2) then
+            -- Never discard timed-out commands: a delayed second press can still roll back the board.
+            ahead = false
+            predicted_stage = mg._current_stage
+        end
+        observed_stage, observed_mistakes = mg._current_stage, mg._mistakes
+        predicted_stage = predicted_stage or observed_stage
     end
-end)
 
-local function on_update(dt)
-	local ds = mod._ds
-	if ds and ds.timer > 0 then ds.timer = math.max(ds.timer - dt, 0) end
-	if mod._ds_submitted_until <= 0 then return end
+    function module.input(action, original, t, source)
+        if not holds[action] or not ctx.settings.enable_decode_auto or not t
+            or not game or ctx.active_minigame ~= game
+            or observed_at ~= t or game:is_completed() then return original end
+        -- Core observes at the fixed time used by HumanInputHandler serialization.
+        if source ~= "input_service" then return original end
+        -- Smart Seed Reroll owns the board while it evaluates, cancels and reopens.
+        if mod._ds_reroll_blocks_solver and mod._ds_reroll_blocks_solver() then return false end
+        local stage, start = predicted_stage, game._decode_start_time
+        local target = game._decode_targets and game._decode_targets[stage]
+        local items, sweep = game._decode_symbols_items_per_stage, game._decode_symbols_sweep_duration
+        local ready = false
+        if not waiting and #pending_stages < (ahead and 2 or 1)
+            and target and start and items and items > 1 and sweep and sweep > 0
+            and game._current_state == "gameplay" then
+            local phase = (t - start) % (2 * sweep)
+            local period, margin = sweep * 2, sweep / (items - 1)
+            local center = (target - 1) * margin
+            local radius = math.max(0, margin * 0.5 - 0.03)
+            local forward = center + math.ceil((phase - radius - center - 1e-12) / period) * period
+            local reverse_center = period - center
+            local reverse = reverse_center
+                + math.ceil((phase - radius - reverse_center - 1e-12) / period) * period
+            ready = math.max(math.min(forward, reverse) - radius, phase) <= phase
+        end
+        local held = ctx.pulse(pulse, ready)
+        if held and sent_frame ~= ctx.input_frame then
+            sent_frame = ctx.input_frame
+            pending_stages[#pending_stages + 1], pending_times[#pending_times + 1] = stage, t
+            predicted_stage = stage + 1
+        end
+        return held
+    end
 
-	local now = game_time()
+    function module.synced(mg)
+        return game == mg and not waiting
+    end
 
-	if now and mod._ds_submitted_until > 0 and now >= mod._ds_submitted_until then
-		mod._ds_submitted_stage = nil
-		mod._ds_submitted_until = 0
-		mod._ds_submit_time = nil
-	end
+    -- Earliest next press after a stage press, for Smart Seed Reroll's board valuation: a release frame and the
+    -- next press frame while presses run ahead of receipts, else the observed receipt delay.
+    function mod._ds_stage_ready_delay(server)
+        local session = Managers.state and Managers.state.game_session
+        local step = session and session.fixed_time_step
+        local frames = 2 * (type(step) == "number" and step > 0 and step or 1 / 30)
+        if server or ahead then return frames end
+        return math.max(frames, mod._ds_stage_ack_cost or 0, mod._ds_network_rtt() or 0)
+    end
+
+    -- Receipt delay of a client press: at most two presses wait for their stage receipts.
+    function mod._ds_stage_ack_delay(server)
+        if server then return 0 end
+        return math.max(mod._ds_stage_ack_cost or 0, mod._ds_network_rtt() or 0)
+    end
+
+    function module.cancel_requested()
+        if not ctx.settings.enable_decode_auto or not game or ctx.active_minigame ~= game
+            or game:is_completed() then return false end
+        -- Only session teardown retires a lost command; this deadline does not choose a hit time.
+        local oldest, t = pending_times[1], ctx.time()
+        return oldest ~= nil and t ~= nil and t - oldest >= 2.5
+    end
+
+    function module.settings_changed(id)
+        if id == "enable_decode_auto" then
+            clear_press()
+            observed_at = nil
+        end
+    end
+
+    -- These notifications must precede/see beyond core state observation:
+    -- start distinguishes retained clocks from early receipts; stop() acknowledges server teardown.
+    mod:hook_safe("MinigameDecodeSymbols", "start", function(self, player, send_to_self_client)
+        if ctx.is_local_player(player) then
+            if mod._ds_reroll_start then mod._ds_reroll_start(self) end
+        elseif (player or not ctx.session_valid(self)) and mod._ds_reroll_abort then
+            mod._ds_reroll_abort(self)
+        end
+        module.start(self, player)
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "stop", function(self, is_automatic)
+        if mod._ds_reroll_stop then mod._ds_reroll_stop(self, is_automatic) end
+        module.stop(self, is_automatic)
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "complete", function(self)
+        if mod._ds_reroll_complete then mod._ds_reroll_complete(self) end
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "set_current_stage", function(self, stage)
+        if not self._is_server then
+            local receipt = board_receipts[self]
+            if receipt then receipt.stage = stage == 1 end
+            stage_received(self, stage)
+        end
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "on_action_pressed", function(self, t)
+        if self._is_server then stage_received(self, self._current_stage) end
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "setup_game", function(self)
+        board_receipts[self] = nil
+        if game == self then clear_press() end
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "set_symbols", function(self, symbols)
+        if clock_receipts[self] then clock_receipts[self] = nil end
+        if not self._is_server then
+            -- A cloned board starts a receipt set; retained target values are not receipts.
+            board_receipts[self] = { symbols = self._symbols, targets = {} }
+        end
+        if game ~= self then return end
+        previous_start = board_start or previous_start
+        candidate_start, candidate_target, candidate_since = nil, nil, nil
+        waiting = true
+        clear_press()
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "set_target", function(self, stage, target)
+        local receipt = board_receipts[self]
+        if receipt then receipt.targets[stage] = target end
+    end)
+    mod:hook_safe("MinigameDecodeSymbols", "set_start_time", function(self, time)
+        -- A nil-player start outside our continuing state belongs to another client (or an AI hack).
+        if self._is_server or clock_receipts[self] == false then return end
+        clock_receipts[self] = { start = time, symbols = self._symbols }
+        local receipt = board_receipts[self]
+        if receipt then receipt.start = time end
+        if game == self and waiting then
+            previous_start = nil
+            candidate_since = nil
+        end
+    end)
+
+    mod:hook_require("scripts/ui/views/scanner_display_view/minigame_decode_symbols_view", function(View)
+        local settings = require("scripts/ui/views/scanner_display_view/scanner_display_view_decode_symbols_settings")
+        local UIWidget = require("scripts/managers/ui/ui_widget")
+        mod:hook_safe(View, "draw_widgets", function(self, dt, t, input_service, renderer)
+            if not ctx.settings.enable_decode_highlight then return end
+            local mg = ctx.active_minigame
+            if not mg or not self._minigame_extension or self._minigame_extension:minigame() ~= mg
+                or mg:is_completed() then return end
+            local stage, targets = mg._current_stage, mg._decode_targets
+            if not stage or not targets then return end
+            local count = math.min(3, #targets - stage)
+            if count <= 0 then views[self] = nil; return end
+            local widgets = views[self]
+            if not widgets then widgets = {}; views[self] = widgets end
+            for i = 1, count do
+                local widget = widgets[i]
+                if not widget then
+                    local definition = UIWidget.create_definition({ {
+                        pass_type = "texture", style_id = "highlight",
+                        value = "content/ui/materials/backgrounds/scanner/scanner_decode_symbol_highlight",
+                        style = { hdr = true, color = { 100, 255, 255, 165 } },
+                    } }, "center_pivot", nil, settings.decode_symbol_widget_size)
+                    widget = UIWidget.init("nb_symbol_target_" .. i, definition)
+                    widgets[i] = widget
+                end
+                local row, size = stage + i, settings.decode_symbol_widget_size
+                widget.offset[1] = settings.decode_symbol_starting_offset_x
+                    + (size[1] + settings.decode_symbol_spacing) * (targets[row] - 1)
+                widget.offset[2] = settings.decode_symbol_starting_offset_y
+                    + (size[2] + settings.decode_symbol_spacing) * (row - 1)
+                widget.offset[3] = 5
+                UIWidget.draw(widget, renderer)
+            end
+        end)
+        mod:hook_safe(View, "destroy", function(self) views[self] = nil end)
+    end)
+
+    function mod._ds_network_rtt()
+        local connection = Managers.connection
+        local network = rawget(_G, "Network")
+        if not connection or not connection.host or not network or not network.ping then return nil end
+        local host_ok, host = pcall(connection.host, connection)
+        if not host_ok or not host then return nil end
+        local ping_ok, rtt = pcall(network.ping, host)
+        return ping_ok and type(rtt) == "number" and rtt >= 0 and rtt or nil
+    end
+
+    return module
 end
-local function on_round_end()
-	ds_reset(decode_active and "round_end" or nil)
-	mod._ds_stage_ack_cost = MIN_STAGE_READY_DELAY
-	mod._ds_stage_ack_samples = 0
-	mod._ds_last_stage_ack = nil
-end
-local function on_setting(id) if id == "enable_decode_auto" then ds_reset(decode_active and "setting_changed" or nil) end end
-
-mod._reg("update", on_update)
-mod._reg("round_end", on_round_end)
-mod._reg("setting_changed", on_setting)
-
-local function hook_decode_state_input(PlayerCharacterStateMinigame)
-	if mod._ds_state_input_hooked then
-		return
-	end
-
-	mod._ds_state_input_hooked = true
-
-	mod:hook(PlayerCharacterStateMinigame, "_update_input", function(func, self, t, fixed_frame, input_extension)
-		if mod._exp_rearm_from_state then
-			mod._exp_rearm_from_state(self, t)
-		end
-		if mod._drill_rearm_from_state then
-			mod._drill_rearm_from_state(self, t)
-		end
-		if mod._bal_rearm_from_state then
-			mod._bal_rearm_from_state(self, t)
-		end
-		if mod._freq_rearm_from_state then
-			mod._freq_rearm_from_state(self, t)
-		end
-
-		if not S("enable_decode_auto") then
-			return func(self, t, fixed_frame, input_extension)
-		end
-
-		local minigame = self and self._minigame
-		local player = self and self._player
-
-		if not mod._is_local_minigame_player(player) then
-			return func(self, t, fixed_frame, input_extension)
-		end
-
-		if not scanner_view_active() then
-			return func(self, t, fixed_frame, input_extension)
-		end
-
-		if not looks_like_decode_symbols(minigame) then
-			return func(self, t, fixed_frame, input_extension)
-		end
-
-		if active_decode_key ~= tostring(minigame) then
-			if not decode_active then
-				active_decode_key = tostring(minigame)
-			else
-				return func(self, t, fixed_frame, input_extension)
-			end
-		end
-
-		decode_active = true
-		decode_completed = false
-		sample_decode_symbols(minigame)
-		local reroll_blocks = false
-		if mod._ds_reroll_active and mod._ds_reroll_active() then
-            local sync_ready = decode_sync_ready(t, minigame)
-			mod._ds_reroll_evaluate(minigame, t, sync_ready)
-		end
-		reroll_blocks = mod._ds_reroll_blocks_solver and mod._ds_reroll_blocks_solver() or false
-
-		local action_one_hold = input_extension:get("action_one_hold")
-		local interact_hold = input_extension:get("interact_hold")
-		local jump_held = input_extension:get("jump_held")
-
-		if action_one_hold ~= self._previous_action_one_hold then
-			self._previous_action_one_hold = action_one_hold
-			self._previous_input = action_one_hold
-		elseif interact_hold ~= self._previous_interact_hold then
-			self._previous_interact_hold = interact_hold
-			self._previous_input = interact_hold
-		elseif jump_held ~= self._previous_jump_held then
-			self._previous_jump_held = jump_held
-			self._previous_input = jump_held
-		end
-
-		local primary_input = self._previous_input or false
-		local action_two_pressed = input_extension:get("action_two_pressed")
-		local cancel = action_two_pressed
-		local block_weapon_actions = false
-
-		if not self:_is_wielding_minigame_device() then
-			return true
-		end
-
-		if reroll_blocks then
-			primary_input = false
-		elseif mod._ds_press_until > t then
-			primary_input = true
-		elseif mod._ds_release_until > t then
-			primary_input = false
-		elseif minigame._is_server and should_press_decode(t) then
-			submit_decode(t)
-			primary_input = true
-		end
-
-		if minigame:uses_action() and minigame:action(primary_input, t) then
-			local animation_extension = self._animation_extension
-
-			if animation_extension then
-				animation_extension:anim_event_1p("button_press")
-
-				if minigame:is_completed() then
-					animation_extension:anim_event_1p("scan_end")
-				end
-			end
-		end
-
-		if minigame:uses_joystick() then
-			local move_input = input_extension:get("move") or Vector3.zero()
-
-			minigame:on_axis_set(t, move_input.x or 0, move_input.y or 0)
-		end
-
-		cancel = minigame:escape_action(action_two_pressed)
-		block_weapon_actions = minigame:blocks_weapon_actions()
-
-		if not cancel and not block_weapon_actions then
-			local weapon_extension = self._weapon_extension
-
-			if weapon_extension then
-				weapon_extension:update_weapon_actions(fixed_frame)
-			end
-		end
-
-		return cancel
-	end)
-end
-
-hook_decode_state_input("PlayerCharacterStateMinigame")
-
-mod:hook_require("scripts/extension_systems/character_state_machine/character_states/player_character_state_minigame", function(PlayerCharacterStateMinigame)
-	hook_decode_state_input(PlayerCharacterStateMinigame)
-end)
-
-return true
