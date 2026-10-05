@@ -146,6 +146,27 @@ local function scanner_view_active()
     return ui ~= nil and ui:view_active("scanner_display_view")
 end
 
+-- Read-only state for the NoBrainerDebug companion; NoBrainer itself never calls this.
+function mod._frame_snapshot(t)
+    t = t or ctx.time()
+    local mg = ctx.active_minigame
+    local out = {
+        solver = active == symbols and "decode_symbols" or active == search and "decode_search"
+            or active == drill and "drill" or nil,
+        minigame = mg,
+        session_valid = local_state ~= nil and ctx.session_valid() or false,
+        input_frame = ctx.input_frame,
+        state_seen = ctx.state_seen == true,
+        timely_frame = ctx.timely_frame,
+        moved_frame = ctx.moved_frame,
+        moved_age = t and ctx.moved_t and t - ctx.moved_t or nil,
+        movement_settled = mg ~= nil and ctx.movement_settled(mg, t) or nil,
+        fast_exit_sent = fast_exit_sent == true,
+    }
+    if active and active.snapshot then active.snapshot(out, t) end
+    return out
+end
+
 local hooked = setmetatable({}, { __mode = "k" })
 local function once(class, name)
     local done = hooked[class]

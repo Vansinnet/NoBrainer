@@ -28,5 +28,5 @@ Old and new solvers must not run together: never enable NoBrainer and BetterBrai
 
 ## Open items
 
-- `NoBrainerDebug` still records the removed Search/Drill/Symbols internals (`mod._exp*`, `mod._drill*`, `mod._ds*` press fields); its snapshots for those three need updating. `NoBrainer.lua` keeps initialising those tables so the recorder does not fail.
+- NoBrainerDebug reads the frame solvers through `mod._frame_snapshot()` (read-only; keep it in step with module state when solvers change) and mirrors their `mod:debug` lines. `NoBrainer.lua` still initialises the old `mod._exp*`, `mod._drill*` and `mod._ds*` tables; nothing reads them any more.
 - Remaining assumption shared with BetterBrainer: a minigame RPC arrives before a server state sent after it.

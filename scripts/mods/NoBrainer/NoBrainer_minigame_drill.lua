@@ -310,6 +310,25 @@ return function(ctx)
         return original
     end
 
+    -- Read-only solver state for the NoBrainerDebug companion (NoBrainer_core.lua mod._frame_snapshot).
+    function module.snapshot(out, t)
+        out.stage, out.cursor_x, out.cursor_y, out.target_x, out.target_y = stage, cursor_x, cursor_y, target_x, target_y
+        out.target_index, out.selected = target_index, game and game:selected_index() or nil
+        out.fresh = game ~= nil and fresh(game) and true or false
+        out.pending_age = pending_since and t and t - pending_since or nil
+        out.pending_frame, out.predicted = pending_frame, predicted
+        out.model, out.trusted, out.holding = model, trusted, holding
+        out.hold_from_left = burst_from and t and burst_from - t or nil
+        out.hold_until_left = burst_from and burst_until and t and burst_until - t or nil
+        out.hold_node = burst_from and burst_index or nil
+        out.ready_left = t and ready_at - t or nil
+        out.settled_age = settled_at and t and t - settled_at or nil
+        out.submit_left = t and submitted_until > t and submitted_until - t or nil
+        out.press_frame, out.move_x, out.move_y = press_frame, move_x, move_y
+        out.ack_wait_age = ack_wait and t and t - ack_wait or nil
+        out.recovery = recovery_requested == true
+    end
+
     function module.settings_changed(id)
         if id == "enable_drill_auto" or id == "drill_solve_speed" then module.reset("settings") end
     end

@@ -245,6 +245,16 @@ return function(ctx)
         return oldest ~= nil and t ~= nil and t - oldest >= 2.5
     end
 
+    -- Read-only solver state for the NoBrainerDebug companion (NoBrainer_core.lua mod._frame_snapshot).
+    function module.snapshot(out, t)
+        out.waiting, out.board_start, out.previous_start = waiting, board_start, previous_start
+        out.candidate_age = candidate_since and t and t - candidate_since or nil
+        out.pending, out.pending_stage = #pending_stages, pending_stages[1]
+        out.pending_age = pending_times[1] and t and t - pending_times[1] or nil
+        out.predicted_stage, out.observed_stage, out.ahead, out.sent_frame = predicted_stage, observed_stage, ahead, sent_frame
+        out.reroll_blocks = mod._ds_reroll_blocks_solver ~= nil and mod._ds_reroll_blocks_solver() or false
+    end
+
     function module.settings_changed(id)
         if id == "enable_decode_auto" then
             clear_press()

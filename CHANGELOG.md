@@ -13,11 +13,12 @@ Backport of BetterBrainer 1.0.0-1.0.3. Settings, defaults and translations are u
 - **Frequency**: on a client, steering and submission wait for this session's own start plus its stage and target receipts; the opening delay is now 0.75 s x pacing (0 at speed 5) instead of 0.5 s + 0.25 s x pacing.
 - **Auspex Scan**: after an interrupted confirm only the same target waits 0.3 s; another target is acquired at once.
 - Search and Drill write optional DMF debug lines (holds, results, waits, retries; off by default).
+- `mod._frame_snapshot()` gives the development companion NoBrainerDebug a read-only copy of the frame solvers' state; NoBrainer itself never calls it.
 
 ### Validation
 - Offline LuaJIT checks against Darktide 1.13.0 source, run in this workspace: `tests/search_spec.lua` 21/21, `tests/drill_spec.lua` 36/36, `tests/speed_spec.lua` 56/56 (17 BetterBrainer-only Frequency/Scan cases skipped), `tests/nobrainer_spec.lua` 7/7, `tests/scan_retry_spec.lua` 3/3, reroll phase harness rerun. Offline results, not in-game measurements.
 - All runtime Lua files and the manifest load in LuaJIT (`tools/validate.sh`). LuaLS reports only NoBrainer's existing dynamic `mod._*` field diagnostics (238, down from 535 before the change); `tools/validate.ps1` and `luac55.exe -p` were not run.
-- Not tested in game. `NoBrainerDebug`'s Search, Drill and Symbols snapshots read the removed internal state and show nothing useful until they are updated; the reroll snapshot still works.
+- Not tested in game. NoBrainerDebug was updated for the frame solvers (its `tests/debug_spec.lua`: 8/8 offline).
 
 ## [3.1.7] - 2026-09-30
 ### Changed

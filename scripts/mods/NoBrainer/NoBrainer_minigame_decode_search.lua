@@ -317,6 +317,26 @@ return function(ctx)
         return movement(action, move_x, move_y)
     end
 
+    -- Read-only solver state for the NoBrainerDebug companion (NoBrainer_core.lua mod._frame_snapshot).
+    function module.snapshot(out, t)
+        local first = pending[1]
+        out.stage, out.cursor_x, out.cursor_y, out.target_x, out.target_y = stage, cursor_x, cursor_y, target_x, target_y
+        out.pending, out.pending_x, out.pending_y = #pending, first and first.x, first and first.y
+        out.pending_held, out.pending_left = first and first.held == true or false, first and t and first.until_t - t or nil
+        out.resync_left = resync_until and t and resync_until - t or nil
+        out.cautious, out.backoff, out.ack_timeout, out.move_limit = cautious, backoff, ack_timeout, move_limit
+        out.ready_left = t and ready_at - t or nil
+        out.settled_age = settled_at and t and t - settled_at or nil
+        out.submit_left = t and submitted_until > t and submitted_until - t or nil
+        out.press_frame, out.press_ready, out.move_x, out.move_y = press_frame, press_ready == true, move_x, move_y
+        out.holding, out.hold_stage = holding, hold_stage
+        out.hold_from_left = hold_from and t and hold_from - t or nil
+        out.hold_until_left = hold_from and hold_until and t and hold_until - t or nil
+        out.stale = stale_x ~= nil
+        out.unverified = unverified == true
+        out.ack_wait_age = ack_wait and t and t - ack_wait or nil
+    end
+
     function module.settings_changed(id)
         if id == "enable_expedition_auto_solve" or id == "expedition_solve_speed" then module.reset("settings") end
     end
