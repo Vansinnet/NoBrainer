@@ -1,6 +1,6 @@
 # Changelog
 
-## [3.2.0] - Unreleased
+## [3.2.0] - 2026-10-05
 Backport of BetterBrainer 1.0.0-1.0.3. Settings, defaults and translations are unchanged. Do not enable NoBrainer and BetterBrainer together.
 
 ### Changed
@@ -17,8 +17,8 @@ Backport of BetterBrainer 1.0.0-1.0.3. Settings, defaults and translations are u
 
 ### Validation
 - Offline LuaJIT checks against Darktide 1.13.0 source, run in this workspace: `tests/search_spec.lua` 21/21, `tests/drill_spec.lua` 36/36, `tests/speed_spec.lua` 56/56 (17 BetterBrainer-only Frequency/Scan cases skipped), `tests/nobrainer_spec.lua` 7/7, `tests/scan_retry_spec.lua` 3/3, reroll phase harness rerun. Offline results, not in-game measurements.
-- All runtime Lua files and the manifest load in LuaJIT (`tools/validate.sh`). LuaLS reports only NoBrainer's existing dynamic `mod._*` field diagnostics (238, down from 535 before the change); `tools/validate.ps1` and `luac55.exe -p` were not run.
-- Not tested in game. NoBrainerDebug was updated for the frame solvers (its `tests/debug_spec.lua`: 8/8 offline).
+- Release validation ran through `tools/release-mod.ps1` and `tools/validate.ps1`: all 13 runtime Lua files and the manifest pass LuaJIT loading and secondary Lua 5.5 syntax checks. The Warning-level LuaLS gate reports 240 warnings (239 dynamic `mod._*` field diagnostics, including the new snapshot field, and the pre-existing scanner `tonumber` type warning). These were reviewed; the archive build uses `-SkipLuaLS` after that review, not a clean Warning-level pass. See `RELEASE-3.2.0.md` for the release record.
+- User-tested in game: the user reports that all new changes work. Exact game build, mission, network role, settings and lifecycle coverage were not specified. NoBrainerDebug was updated for the frame solvers (its `tests/debug_spec.lua`: 8/8 offline).
 
 ## [3.1.7] - 2026-09-30
 ### Changed

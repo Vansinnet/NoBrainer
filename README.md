@@ -1,5 +1,7 @@
 # NoBrainer
 
+Current release: **3.2.0**.
+
 A Darktide Mod Framework (DMF) mod that assists with several in-game minigames.
 
 ## Features
@@ -27,7 +29,7 @@ Do not enable NoBrainer together with another mod that automates the same miniga
 
 ## Downloads
 
-Download `NoBrainer.zip` from the [latest release](../../releases/latest). It contains only the installed `NoBrainer` folder, its `.mod` manifest, and required `scripts/` files. Do not use GitHub's automatically generated source-code archives for installation.
+Download `NoBrainer.zip` from the [latest release](https://github.com/Vansinnet/NoBrainer/releases/latest). It contains one installed `NoBrainer` folder with its `.mod` manifest, required `scripts/` files, README and MIT license. Do not use GitHub's automatically generated source-code archives for installation.
 
 ## Development
 

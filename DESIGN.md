@@ -23,8 +23,9 @@ Old and new solvers must not run together: never enable NoBrainer and BetterBrai
 ## Runtime status
 
 - Offline: see `tests/README.md` (all pass, 2026-10-05).
-- In game: not tested. BetterBrainer 1.0.3's in-game evidence (remote missions, speed 5: Drill holds, Search pre-send and recentre) applies to the same solver code but not to NoBrainer's integration.
-- Smallest in-game test: as a client on a dedicated server at speed 5, solve Search (including a reopen), Drill and Symbols with and without Smart Seed Reroll, one Frequency and one scan; with DMF debug logging on, no `again`, `retrying`, `no recentre seen` or `resync` lines are expected. Then a local solo run at speed 1, and disable/enable during a stage transition.
+- Release 3.2.0: see `RELEASE-3.2.0.md` for packaging, checksums, the reviewed nonzero LuaLS result and remaining runtime coverage.
+- In game: user-tested, 2026-10-05. The user reports that all new changes work. Exact game build, mission, network role, settings and lifecycle coverage were not specified; no stronger context-specific claim is made.
+- Remaining context-specific coverage, if not already covered by the user's test: as a client on a dedicated server at speed 5, solve Search (including a reopen), Drill and Symbols with and without Smart Seed Reroll, one Frequency and one scan; with DMF debug logging on, no `again`, `retrying`, `no recentre seen` or `resync` lines are expected. Then a local solo run at speed 1, and disable/enable during a stage transition.
 
 ## Open items
 
