@@ -1,0 +1,33 @@
+# Standard .gitignore for every mod repository (template: tools/templates/mod.gitignore).
+# Tracked: runtime files, README/LICENSE/NOTICE, DESIGN.md, TESTING.md, RESEARCH.md, tests/, tools/,
+# resource/ (build scripts) and, for Reforge mods, reforge.json, release-layout.json, payload/ and bin/.
+# Never tracked: research output and extracted game files, build intermediates, generated files,
+# release archives and release-note files (GitHub releases are the history).
+
+# Research output and extracted stock game files
+/analysis/
+
+# Reforge build intermediates derived from game files
+/payload/inserts/
+/payload/manifest.json
+
+# Generated files
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.bak
+*.luac
+*.zip
+*.7z
+
+# Local settings and editors
+.source-path.local
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Mod-specific (keep below this line)
