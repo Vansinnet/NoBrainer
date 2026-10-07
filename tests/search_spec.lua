@@ -14,7 +14,7 @@ end
 local SPEED5 = { expedition_solve_speed = 5, enable_scan = false, enable_auto_scan = false }
 local TRANSITION = 0.25
 
-print("NoBrainer Search tests | " .. jit.version .. " | source 1.13.0 | "
+print("NoBrainer Search tests | " .. jit.version .. " | source " .. (FIXTURE_SOURCE_VERSION or "darktide-source") .. " | "
     .. (baseline and "BASELINE expectations" or "CURRENT runtime"))
 
 -- An online (or local-server) Search on a chosen board seed.

@@ -3,7 +3,13 @@
 -- Search, Drill and Symbols run as BetterBrainer-shaped modules through NoBrainer_core.lua; the legacy
 -- Frequency, Smart Seed Reroll and input route also load. Servo skull, Scan and Balance hook engine
 -- classes this fixture does not load and are skipped.
-local M = { source = "darktide-source/Darktide-Source-Code-1.13.0/" }
+local M = { source = "darktide-source/" }
+do -- Patch for the spec banners; darktide-source/ is a git clone of the game source.
+    local ok, pipe = pcall(io.popen, "git -C darktide-source log -1 --format=%s")
+    local line = ok and pipe and pipe:read("*l")
+    if ok and pipe then pipe:close() end
+    FIXTURE_SOURCE_VERSION = line and line:match("Version ([%d%.]+)") or "unknown"
+end
 local ROOT = "mods/active/NoBrainer/scripts/mods/NoBrainer/"
 
 function M.read(path)

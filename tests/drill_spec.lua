@@ -13,7 +13,7 @@ local function test(name, body)
 end
 local SPEED5 = { drill_solve_speed = 5, enable_scan = false, enable_auto_scan = false }
 
-print("NoBrainer Drill tests | " .. jit.version .. " | source 1.13.0 | "
+print("NoBrainer Drill tests | " .. jit.version .. " | source " .. (FIXTURE_SOURCE_VERSION or "darktide-source") .. " | "
     .. (baseline and "BASELINE expectations" or "CURRENT runtime"))
 
 -- An online Drill on a chosen board seed (fixture:open always uses seed 1729).

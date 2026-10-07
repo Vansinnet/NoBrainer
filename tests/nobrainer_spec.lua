@@ -11,7 +11,7 @@ local function test(name, body)
     else failed = failed + 1; print("FAIL " .. name .. "\n" .. err) end
 end
 
-print("NoBrainer integration tests | " .. jit.version .. " | source 1.13.0")
+print("NoBrainer integration tests | " .. jit.version .. " | source " .. (FIXTURE_SOURCE_VERSION or "darktide-source") .. "")
 
 local function symbols(seed, values, delay, before)
     local f = fixture(values)
