@@ -1,6 +1,7 @@
 local STAGE_ACK_ALPHA = 0.3
 
 return function(ctx)
+    ---@class NoBrainerMod
     local mod = ctx.mod
     local module = {}
     local game, previous_start, board_start, board_target

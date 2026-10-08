@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 local path = "NoBrainer/scripts/mods/NoBrainer/"
 -- Search, Drill and Symbols decide once per serialized fixed input frame (BetterBrainer 1.0.3 core).

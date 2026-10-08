@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 local S = mod._S
 local next_random = rawget(math, "next_random")

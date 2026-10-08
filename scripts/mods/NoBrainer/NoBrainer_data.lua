@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 
 return {

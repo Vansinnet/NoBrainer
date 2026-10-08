@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 local S = mod._S
 
@@ -57,6 +58,7 @@ local _balance_cleanup
 local balance_stopped_key = nil
 local balance_stopped_until = 0
 local balance_restart_key = nil
+---@type number
 local balance_restart_until = 0
 local balance_restart_stop_seen = false
 local balance_restart_stop_at = 0
@@ -492,6 +494,7 @@ mod:hook_safe("MinigameBalance", "stop", function(self, ...)
 		balance_stopped_key = nil
 		balance_stopped_until = 0
 	elseif recoverable_restart then
+		---@cast now number
 		balance_restart_key = key
 		balance_restart_until = restart_until
 		balance_restart_stop_seen = true

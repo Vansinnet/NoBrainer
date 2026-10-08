@@ -1,3 +1,11 @@
+---@class NoBrainerMod: DMFMod
+---@field _on_update? function[] # Callbacks registered through mod._reg("update", cb).
+---@field _on_runtime_reset? function[] # Callbacks registered through mod._reg("runtime_reset", cb).
+---@field _on_round_end? function[] # Callbacks registered through mod._reg("round_end", cb).
+---@field _on_setting_changed? function[] # Callbacks registered through mod._reg("setting_changed", cb).
+---@field _on_enabled? function[] # Callbacks registered through mod._reg("enabled", cb).
+---@field _on_disabled? function[] # Callbacks registered through mod._reg("disabled", cb).
+---@field _on_unload? function[] # Callbacks registered through mod._reg("unload", cb).
 local mod = get_mod("NoBrainer")
 
 local cache = {}

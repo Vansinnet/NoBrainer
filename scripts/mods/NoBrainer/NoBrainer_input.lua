@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 local S = mod._S
 
@@ -140,6 +141,7 @@ local scan_hold_duration = nil
 local function _scan_hold_duration()
 	if scan_hold_duration then return scan_hold_duration end
 
+	---@type number
 	local duration = 1
 	local scanner = require("scripts/settings/equipment/weapon_templates/devices/scanner_equip")
 	local actions = scanner and scanner.actions
@@ -147,7 +149,7 @@ local function _scan_hold_duration()
 	local scan_settings = action and action.scan_settings
 
 	if scan_settings and tonumber(scan_settings.confirm_time) then
-		duration = tonumber(scan_settings.confirm_time)
+		duration = tonumber(scan_settings.confirm_time) --[[@as number]]
 	end
 
 	scan_hold_duration = duration + 0.15
@@ -195,6 +197,7 @@ local function _scan(action, result)
 		if not target then
 			return result
 		end
+		---@cast scan -nil
 
 		if not scan.line_of_sight then
 			return result

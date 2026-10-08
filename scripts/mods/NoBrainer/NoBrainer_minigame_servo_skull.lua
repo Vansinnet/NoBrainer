@@ -1,3 +1,4 @@
+---@class NoBrainerMod
 local mod = get_mod("NoBrainer")
 
 local CompanionServoSkullSettings = require("scripts/settings/companion/companion_servo_skull_settings")
