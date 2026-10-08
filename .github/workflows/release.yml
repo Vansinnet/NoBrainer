@@ -1,0 +1,253 @@
+# Builds, validates and publishes a release when a version tag is pushed.
+# Template: tools/github/release.yml -> <mod repo>/.github/workflows/release.yml
+# Generated for this mod; edit the template and regenerate rather than this copy.
+#
+# Two triggers, same checks (darktide-release skill):
+# - workflow_dispatch on main with inputs version and notes (agents: REST
+#   POST .../actions/workflows/release.yml/dispatches). Releases main's head and
+#   creates tag vVERSION.
+# - Push of an annotated tag vX.Y.Z on a commit of main; the tag message is the
+#   notes. Create it with git tag -a vX.Y.Z --cleanup=verbatim -F <notes> <commit>.
+# vX.Y.Z-suffix is a prerelease (GitHub only). The notes need a non-empty
+# "## Changes" section. A release that already exists (published by
+# tools/publish-github-release.ps1) is left alone; its own release event runs
+# the Nexus workflow.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 1.2.0 (1.2.0-beta.1 for a prerelease)
+        required: true
+        type: string
+      notes:
+        description: Release notes in Markdown with a "## Changes" section
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  MOD_NAME: "NoBrainer"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      created: ${{ steps.publish.outputs.created }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag, notes and metadata
+        id: check
+        env:
+          DISPATCH_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "Tag must be vX.Y.Z or vX.Y.Z-suffix: $TAG" >&2; exit 1; }
+          version="${TAG#v}"
+          prerelease=false
+          [ -z "${BASH_REMATCH[2]}" ] || prerelease=true
+
+          git fetch --no-tags origin main
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "Dispatch the release on main." >&2; exit 1; }
+            commit="$GITHUB_SHA"
+            [ "$commit" = "$(git rev-parse origin/main)" ] || { echo "main moved after the dispatch; dispatch again." >&2; exit 1; }
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+              gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+                || { echo "Tag $TAG exists without a release; release it by tag or choose another version." >&2; exit 1; }
+            fi
+            printf '%s\n' "$DISPATCH_NOTES" > notes.md
+          else
+            # actions/checkout can store the tag as a lightweight ref; fetch the tag object itself.
+            git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            [ "$(git cat-file -t "refs/tags/$TAG")" = tag ] \
+              || { echo "$TAG must be an annotated tag; its message is the release notes." >&2; exit 1; }
+            commit="$(git rev-list -n 1 "$TAG")"
+            git merge-base --is-ancestor "$commit" origin/main \
+              || { echo "$TAG must point at a commit on main." >&2; exit 1; }
+            git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN PGP SIGNATURE-----/,$d' > notes.md
+          fi
+          awk '/^## /{ p = ($0 ~ /^## Changes[[:space:]]*$/); next } p' notes.md | sed '/^[[:space:]]*$/d' > changes.md
+          [ -s changes.md ] || { echo 'The tag message needs a non-empty "## Changes" section.' >&2; exit 1; }
+          ! grep -qiE '\b[0-9a-f]{64}\b' notes.md || { echo "Do not write a SHA-256 in the notes; the workflow appends it." >&2; exit 1; }
+
+          if [ -f info.json ]; then
+            info_version="$(jq -r .version info.json)"
+            [ "$info_version" = "${version%%[-+]*}" ] || [ "$info_version" = "$version" ] \
+              || { echo "info.json version $info_version does not match $TAG." >&2; exit 1; }
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install LuaJIT
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit > /dev/null
+
+      - name: Build and inspect the release ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 - "$MOD_NAME" dist <<'PY'
+          import hashlib, json, os, re, subprocess, sys, zipfile
+          mod, out = sys.argv[1], sys.argv[2]
+
+          def fail(message):
+              sys.exit("Release check failed: " + message)
+
+          manifests = [f for f in os.listdir(".") if f.endswith(".mod") and os.path.isfile(f)]
+          if manifests != [mod + ".mod"]:
+              fail(f"expected exactly one top-level {mod}.mod, found {manifests}")
+          text = open(mod + ".mod", encoding="utf-8-sig").read()
+          if not re.search(r'new_mod\s*\(\s*["\']([^"\']+)["\']', text):
+              fail("no literal ModID in the .mod file")
+          paths = re.findall(r'mod_(?:script|data|localization)\s*=\s*["\']([^"\']+)["\']', text)
+          if len(paths) != 3:
+              fail("the .mod file must declare literal mod_script, mod_data and mod_localization")
+          for path in paths:
+              if not path.startswith(mod + "/") or not os.path.isfile(path[len(mod) + 1:] + ".lua"):
+                  fail(f"DMF path {path} does not resolve inside {mod}/")
+
+          forbidden_dirs = {"analysis", "resource", "resources", "installer", "bootstrap", "bin", "obj",
+                            "tools", "tests", "types", ".git", ".github", ".opencode", "LuaExec"}
+          forbidden_ext = {".zip", ".7z", ".rar", ".log", ".tmp", ".bak", ".pyc", ".luac", ".pdb", ".user",
+                           ".suo", ".env", ".pem", ".key", ".pfx", ".p12"}
+          forbidden_names = {"luac.out", "desktop.ini", "Thumbs.db", ".env", "secrets.json", "credentials.json"}
+          direct = os.path.isfile("release-layout.json")
+          files = []
+
+          def add(source, destination):
+              if os.path.isabs(source) or ".." in re.split(r"[\\/]", source) or not destination.startswith(mod + "/"):
+                  fail(f"unsafe mapping {source} -> {destination}")
+              if not os.path.exists(source) or os.path.islink(source):
+                  fail(f"missing source or symlink: {source}")
+              if os.path.isdir(source):
+                  found = []
+                  for root, dirs, names in os.walk(source):
+                      if any(os.path.islink(os.path.join(root, d)) for d in dirs):
+                          fail(f"symlink under {source}")
+                      found += [os.path.join(root, n) for n in names]
+                  items = [(f, destination + "/" + os.path.relpath(f, source).replace(os.sep, "/")) for f in sorted(found)]
+              else:
+                  items = [(source, destination)]
+              if not items:
+                  fail(f"empty source: {source}")
+              for path, entry in items:
+                  rel = os.path.normpath(path).replace(os.sep, "/")
+                  library = direct and rel in ("bin/reforge.dll", "bin/REFORGE_NOTICES.txt")
+                  if set(rel.split("/")) & forbidden_dirs and not library:
+                      fail(f"development path in the release: {rel}")
+                  name = os.path.basename(rel)
+                  if (os.path.splitext(name)[1] in forbidden_ext or name in forbidden_names
+                          or re.search(r"(?i)secret|credential", name) or os.path.islink(path)):
+                      fail(f"forbidden file in the release: {rel}")
+                  files.append((rel, entry))
+
+          if direct:
+              layout = json.load(open("release-layout.json", encoding="utf-8-sig"))
+              if layout.get("schemaVersion") != 1 or layout.get("profile") != "direct" or "installer" in layout:
+                  fail("release-layout.json must be schemaVersion 1, profile direct, no installer")
+              for group in ("payload", "documentation", "licenses"):
+                  mappings = layout["package"].get(group) or []
+                  if not mappings:
+                      fail(f"release-layout.json needs at least one {group} mapping")
+                  for mapping in mappings:
+                      add(mapping["source"], mapping["destination"])
+          else:
+              if os.path.isdir("payload") or os.path.isdir("bin"):
+                  fail("payload/ or bin/ needs a reviewed release-layout.json")
+              for root, _, names in os.walk("scripts"):
+                  for name in names:
+                      if not name.endswith(".lua"):
+                          fail(f"non-Lua file under scripts/ needs release-layout.json: {os.path.join(root, name)}")
+              add(mod + ".mod", f"{mod}/{mod}.mod")
+              add("scripts", f"{mod}/scripts")
+
+          entries = [entry for _, entry in files]
+          if len({e.lower() for e in entries}) != len(entries):
+              fail("duplicate destination")
+          if f"{mod}/{mod}.mod" not in entries:
+              fail("the .mod file is not in the payload")
+          runtime = sorted(rel for rel, _ in files if rel.endswith((".lua", ".mod")))
+          if not runtime:
+              fail("no runtime Lua or .mod files")
+          for rel in runtime:
+              check = 'local f, e = loadfile(os.getenv("LUA_FILE")) if not f then io.stderr:write(e) os.exit(1) end'
+              result = subprocess.run(["luajit", "-e", check], env=dict(os.environ, LUA_FILE=rel),
+                                      capture_output=True, text=True)
+              if result.returncode:
+                  fail(f"LuaJIT load failed for {rel}: {result.stderr.strip()}")
+          print(f"LuaJIT load passed for {len(runtime)} runtime file(s).")
+
+          def sha(path):
+              return hashlib.sha256(open(path, "rb").read()).hexdigest().upper()
+
+          archive = os.path.join(out, mod + ".zip")
+          with zipfile.ZipFile(archive, "w") as z:
+              for rel, entry in sorted(files, key=lambda item: item[1].lower()):
+                  info = zipfile.ZipInfo(entry, date_time=(2000, 1, 1, 0, 0, 0))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o644 << 16
+                  z.writestr(info, open(rel, "rb").read(), compresslevel=9)
+          with zipfile.ZipFile(archive) as z:
+              if z.testzip() is not None:
+                  fail("CRC check failed")
+              by_entry = dict((entry, rel) for rel, entry in files)
+              for name in z.namelist():
+                  if "\\" in name or not name.startswith(mod + "/"):
+                      fail(f"unexpected archive entry {name}")
+                  if hashlib.sha256(z.read(name)).digest() != hashlib.sha256(open(by_entry[name], "rb").read()).digest():
+                      fail(f"archive entry differs from its source: {name}")
+              print(f"{len(z.namelist())} archive entries:")
+              print("\n".join(z.namelist()))
+          print("SHA-256", sha(archive))
+          PY
+
+      - name: Publish the GitHub release
+        id: publish
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          PRERELEASE: ${{ steps.check.outputs.prerelease }}
+          COMMIT: ${{ steps.check.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists; it was published another way and is left unchanged."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          hash="$(sha256sum "dist/$MOD_NAME.zip" | cut -d' ' -f1 | tr 'a-f' 'A-F')"
+          { cat notes.md; printf '\n\nSHA-256 (%s.zip): %s\n\nSource commit: %s\n' "$MOD_NAME" "$hash" "$COMMIT"; } > body.md
+          flag=--latest
+          [ "$PRERELEASE" = false ] || flag=--prerelease
+          verify=--verify-tag
+          [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || verify="--target=$COMMIT"
+          gh release create "$TAG" "dist/$MOD_NAME.zip#$MOD_NAME.zip" --repo "$GITHUB_REPOSITORY" "$verify" \
+            --title "$MOD_NAME $VERSION" --notes-file body.md --generate-notes "$flag"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "Published $TAG with $MOD_NAME.zip SHA-256 $hash"
