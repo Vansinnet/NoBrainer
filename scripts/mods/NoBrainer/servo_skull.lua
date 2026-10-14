@@ -1,9 +1,7 @@
----@class NoBrainerMod
-local mod = get_mod("NoBrainer")
-
 local CompanionServoSkullSettings = require("scripts/settings/companion/companion_servo_skull_settings")
 local SpecialRulesSettings = require("scripts/settings/ability/special_rules_settings")
 
+-- Skitarius hacking servo skull: order it to the nearest hackable target (NoBrainer only).
 local CHECK_INTERVAL = 0.05
 local ORDER_RETRY_DELAY = 1
 local ORDER_CONFIRM_TIMEOUT = 2
@@ -143,12 +141,13 @@ local function update_attempt(t, active_tag, state)
 	end
 end
 
-mod._reg("update", function()
-	if not mod._S("enable_servo_skull_auto_hack") then
+return function(ctx)
+local module = {}
+
+function module.update(dt, t)
+	if not ctx.settings.enable_servo_skull_auto_hack then
 		return
 	end
-
-	local t = mod._time("gameplay")
 
 	if not t or t < next_check then
 		return
@@ -180,9 +179,9 @@ mod._reg("update", function()
 	end
 
 	local player_position = Unit.world_position(player_unit, 1)
-	local command_range = mod._N("servo_skull_command_range", CompanionServoSkullSettings.max_target_distance_range, 5, 100)
+	local command_range = ctx.settings.servo_skull_command_range
 	local command_range_sq = command_range * command_range
-	local require_line_of_sight = mod._S("servo_skull_require_line_of_sight")
+	local require_line_of_sight = ctx.settings.servo_skull_require_line_of_sight
 	local physics_world
 	local line_of_sight_origin
 
@@ -211,22 +210,19 @@ mod._reg("update", function()
 
 	smart_tag_system:set_contextual_unit_tag(player_unit, target_unit, true)
 	next_order_at = t + ORDER_RETRY_DELAY
-end)
+end
 
-local function reset()
+function module.reset(reason)
 	next_check = 0
 	next_order_at = 0
 	clear_attempt()
 end
 
-mod._reg("runtime_reset", reset)
-mod._reg("enabled", function()
-	reset()
-end)
-mod._reg("setting_changed", function(id)
+function module.settings_changed(id)
 	if id == "enable_servo_skull_auto_hack" then
-		reset()
+		module.reset("settings")
 	end
-end)
+end
 
-return true
+return module
+end

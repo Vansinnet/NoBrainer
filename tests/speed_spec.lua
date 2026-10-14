@@ -5,13 +5,8 @@ local baseline = arg[1] == "--baseline"
 assert(arg[1] == nil or baseline, "usage: speed_spec.lua [--baseline]")
 local fixture = H.factory()
 local eq, near, copy, rpc, deliver = H.eq, H.near, H.copy, H.rpc, H.deliver
-local passed, failed, skipped = 0, 0, 0
--- NoBrainer keeps its own Frequency and Scan solvers; their BetterBrainer cases do not apply.
-local function applies(name)
-    return not (name:find("^Frequency") or name:find("^Scan") or name:find("^Full native solve: frequency"))
-end
+local passed, failed = 0, 0
 local function test(name, body)
-    if not applies(name) then skipped = skipped + 1; return end
     local ok, err = xpcall(body, debug.traceback)
     if ok then passed = passed + 1; print("PASS " .. name)
     else failed = failed + 1; print("FAIL " .. name .. "\n" .. err) end
@@ -23,7 +18,7 @@ local function step(f, frame, t, consume)
     return sample
 end
 
-print("NoBrainer focused speed tests (Search, Symbols) | " .. jit.version .. " | source " .. (FIXTURE_SOURCE_VERSION or "darktide-source") .. " | "
+print("NoBrainer focused speed tests | " .. jit.version .. " | source " .. (FIXTURE_SOURCE_VERSION or "darktide-source") .. " | "
     .. (baseline and "BASELINE expectations" or "CURRENT runtime"))
 
 test("fixture uses LuaJIT quadrant-aware atan2, vararg arity and seconds clock", function()
@@ -55,7 +50,7 @@ for _, speed in ipairs({ 1, 3, 5 }) do
     end)
 end
 
--- Server state: the server ran frame `frame` on its own input (see BetterBrainer.lua movement_settled).
+-- Server state: the server ran frame `frame` on its own input (see NoBrainer.lua movement_settled).
 local function input_ack(f, frame) f:report_frame(frame, true) end
 
 local function search_case(speed, x, y)
@@ -591,5 +586,5 @@ test("Symbols early stop retires board proof even when a later clock arrives", f
     eq(step(f, 3, 20.121).action_one_hold, true, "legacy stability fallback remains")
 end)
 
-print(string.format("RESULT %d passed, %d failed, %d BetterBrainer-only skipped", passed, failed, skipped))
+print(string.format("RESULT %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

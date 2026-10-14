@@ -32,6 +32,12 @@ return function(ctx)
     local unverified -- the recentre never showed: no press until the server confirms a move or a resync
     local ack_wait -- when a press was otherwise ready but waited for the server to run later input
     local press_frame -- input frame of this stage's last press
+    -- Transition skip (DESIGN.md): after a stage press, reopen; the new session starts in gameplay at the centre.
+    local reopening = true -- cleared after a fault around a reopen, until the next mission
+    local reopen_stage -- requested after this press, not yet resumed
+    local plan_stage -- resumed: planned stage until its receipt arrives
+    local reopened -- the current stage began with a reopen
+    local recentre_until -- resumed: the shown cursor predates the recentre until its receipt or this time
     -- Client minigame -> whether the recentre arrived since our own last start (false: not yet).
     local recentred = setmetatable({}, { __mode = "k" })
     local center_x, center_y = math.floor(Settings.decode_search_board_width / 2),
@@ -39,8 +45,9 @@ return function(ctx)
     local width, height = Settings.decode_search_board_width, Settings.decode_search_board_height
     local cw, ch = Settings.decode_search_cursor_width, Settings.decode_search_cursor_height
 
-    local function target(mg)
-        local s, symbols, wanted = mg:current_stage(), mg:symbols(), mg:current_decode_target()
+    local function target(mg, planned)
+        local s, symbols = planned or mg:current_stage(), mg:symbols()
+        local wanted = planned and mg:decode_targets()[planned] or mg:current_decode_target()
         if not s or not wanted or #wanted ~= cw * ch or #symbols ~= width * height then
             return nil
         end
@@ -90,8 +97,28 @@ return function(ctx)
         press_t, hold_from, hold_stage = nil, nil, nil
         stale_x, stale_y, stale_t, unverified = nil, nil, nil, false
         ack_wait, press_frame = nil, nil
-        -- A new mission re-arms the pre-send after a miss (one timeout and resync at most per mission).
-        if reason == "gameplay_exit" then holding = true end
+        reopen_stage, plan_stage, reopened, recentre_until = nil, nil, nil, nil
+        -- A new mission re-arms the pre-send and the reopen after a miss (one timeout and resync at most per mission).
+        if reason == "gameplay_exit" then holding, reopening = true, true end
+    end
+
+    -- The core resumes us in the new session of the same minigame. setup_game kept the stage and board, recentred
+    -- the cursor and resumed gameplay (minigame_decode_search.lua:68-86): plan the next stage from the centre at once.
+    function module.resume(mg, t)
+        plan_stage, reopen_stage, reopened = reopen_stage, nil, true
+        cursor_x, cursor_y = center_x, center_y
+        -- A local server recentres the shared minigame at once; a client waits for that receipt.
+        recentre_until = not mg._is_server and t + ack_timeout or nil
+        table.clear(pending)
+        hold_from, hold_stage, next_x = nil, nil, nil
+        settled_at, submitted_until, ack_wait = nil, 0, nil
+        move_frame, move_release, last_move_frame = nil, false, nil
+        observed = nil
+        ctx.mod:debug("Search reopen: resumed at %.3f, stage %s planned from the centre", t, tostring(plan_stage))
+    end
+
+    function module.reopen_failed()
+        reopen_stage, reopening = nil, false
     end
 
     function module.observe(mg, t)
@@ -128,13 +155,19 @@ return function(ctx)
             ack_timeout, next_ping = math.min(3.2, base_timeout * backoff), t + 1
         end
         local s = mg:current_stage()
+        if plan_stage and s and s >= plan_stage then
+            -- The receipt of the press before the reopen: this stage is already planned, and there is no transition.
+            ctx.mod:debug("Search reopen: stage %d receipt at %.3f", s, t)
+            plan_stage, hold_from, press_t, press_frame = nil, nil, nil, nil
+            stage, settled_at, submitted_until = s, nil, 0
+        end
         if stage ~= s then
             if stage then ready_at = t + ctx.pacing("expedition_solve_speed") * 1.632 end
-            hold_from = nil
+            hold_from, reopened = nil, nil
             -- Our press advanced the stage: hold the next first step across the native transition end.
             -- A local server already acts on its first gameplay frame; only receipt latency is saved.
-            if holding and not mg._is_server and stage and s == stage + 1 and press_t and cursor_x and #pending == 0
-                and not resync_until and ctx.pacing("expedition_solve_speed") == 0 then
+            if holding and not mg._is_server and not reopen_stage and stage and s == stage + 1 and press_t and cursor_x
+                and #pending == 0 and not resync_until and ctx.pacing("expedition_solve_speed") == 0 then
                 local tx, ty = target(mg)
                 if tx and (tx ~= cursor_x or ty ~= cursor_y) then
                     hold_from, hold_press = math.max(press_t + Settings.decode_transition_time, t), press_t
@@ -160,13 +193,33 @@ return function(ctx)
             press_t, press_frame = nil, nil
             stage, settled_at, submitted_until = s, nil, 0
         end
+        if plan_stage and ctx.server_ran_after(mg, press_frame) == true then
+            -- The server ran later input without advancing the stage: that press never ran. Plan its stage again.
+            ctx.mod:debug("Search reopen: the press at frame %s did not run, stage %s planned again",
+                tostring(press_frame), tostring(s))
+            plan_stage, reopening = nil, false
+        end
         target_x, target_y = nil, nil
-        if mg:state() ~= Settings.game_states.gameplay then
+        -- After a reopen the shown state is the old transition until the new session's receipts arrive.
+        if not plan_stage and mg:state() ~= Settings.game_states.gameplay then
             settled_at = nil
             return
         end
         local cursor = mg:cursor_position()
         if not cursor then return end
+        local forced = false
+        if recentre_until then
+            if recentred[mg] then
+                recentre_until = nil
+            elseif t < recentre_until then
+                -- The client still shows the cursor from before the reopen: keep planning from the centre.
+                target_x, target_y = target(mg, plan_stage)
+                return
+            else
+                ctx.mod:debug("Search reopen: no recentre within %.2fs", ack_timeout)
+                recentre_until, forced = nil, true
+            end
+        end
         if stale_x then
             -- Neither move nor press from the old cursor. Only the recentre ends the wait; a late result of the
             -- earlier session's last move arrives before it (one ordered channel) and only replaces the old cursor.
@@ -183,13 +236,13 @@ return function(ctx)
                 stale_x, stale_y, stale_t, unverified = nil, nil, nil, true
             end
         end
-        target_x, target_y = target(mg)
+        target_x, target_y = target(mg, plan_stage)
         local changed = cursor_x ~= cursor.x or cursor_y ~= cursor.y
         if changed then
             ctx.mod:debug("Search cursor: t %.3f, %s,%s -> %d,%d, pending %d", t, tostring(cursor_x), tostring(cursor_y),
                 cursor.x, cursor.y, #pending)
         end
-        local mismatch = false
+        local mismatch = forced
         if resync_until then
             if changed then resync_until = t + ack_timeout end
             -- The new baseline is final once the server has run later input than any direction we sent.
@@ -223,6 +276,10 @@ return function(ctx)
                 holding = false
                 ctx.mod:debug("Search hold: %s, holding switched off", mismatch and "unexpected cursor" or "no result")
             end
+            if reopened and reopening then
+                reopening = false
+                ctx.mod:debug("Search reopen: %s after a reopen, reopening switched off", mismatch and "unexpected cursor" or "no result")
+            end
             table.clear(pending)
             hold_from, next_x = nil, nil -- no held or pre-sent step outside the pending list
             cautious, backoff = true, math.min(4, backoff * 2)
@@ -232,7 +289,8 @@ return function(ctx)
         end
         if changed then settled_at = nil end
         cursor_x, cursor_y = cursor.x, cursor.y
-        if not resync_until and #pending == 0 and cursor_x == target_x and cursor_y == target_y then
+        -- A planned stage never settles: a press needs its stage receipt.
+        if not resync_until and not plan_stage and #pending == 0 and cursor_x == target_x and cursor_y == target_y then
             settled_at = settled_at or t
         else
             settled_at = nil
@@ -244,11 +302,16 @@ return function(ctx)
         if source ~= "input_service" then return original end
         t = t or ctx.time()
         if not t or not game or game ~= ctx.active_minigame or not ctx.settings.enable_expedition_auto_solve
-            or game:is_completed() or game:state() ~= Settings.game_states.gameplay
+            or game:is_completed() or game:state() ~= Settings.game_states.gameplay and not plan_stage
             and not (hold_stage == stage and MOVE[action]) then return original end
         if not PRIMARY[action] and not MOVE[action] then return original end
         local sample = ctx.input_frame
         if not sample then return original end
+        if reopen_stage and sent_frame ~= sample then
+            -- After the press that requested a reopen: release and stay still until the session closes.
+            if PRIMARY[action] then return ctx.pulse(pulse, false) end
+            return movement(action, 0, 0)
+        end
         if move_frame ~= sample then
             move_frame, move_x, move_y = sample, 0, 0
             if hold_from then
@@ -311,30 +374,17 @@ return function(ctx)
                     ctx.mod:debug("Search press: waited %.3fs for the server to run later input", t - ack_wait)
                     ack_wait = nil
                 end
+                -- Skip the transition: the reopened session is in gameplay at once (DESIGN.md, Search transition skip).
+                if reopening and ctx.settings.enable_expedition_reopen and ctx.pacing("expedition_solve_speed") == 0
+                    and stage and stage < Settings.decode_search_stage_amount and not cautious
+                    and ctx.request_reopen(game) then
+                    reopen_stage = stage + 1
+                    ctx.mod:debug("Search reopen: requested after the stage %d press at %.3f", stage, t)
+                end
             end
             return held
         end
         return movement(action, move_x, move_y)
-    end
-
-    -- Read-only solver state for the NoBrainerDebug companion (NoBrainer_core.lua mod._frame_snapshot).
-    function module.snapshot(out, t)
-        local first = pending[1]
-        out.stage, out.cursor_x, out.cursor_y, out.target_x, out.target_y = stage, cursor_x, cursor_y, target_x, target_y
-        out.pending, out.pending_x, out.pending_y = #pending, first and first.x, first and first.y
-        out.pending_held, out.pending_left = first and first.held == true or false, first and t and first.until_t - t or nil
-        out.resync_left = resync_until and t and resync_until - t or nil
-        out.cautious, out.backoff, out.ack_timeout, out.move_limit = cautious, backoff, ack_timeout, move_limit
-        out.ready_left = t and ready_at - t or nil
-        out.settled_age = settled_at and t and t - settled_at or nil
-        out.submit_left = t and submitted_until > t and submitted_until - t or nil
-        out.press_frame, out.press_ready, out.move_x, out.move_y = press_frame, press_ready == true, move_x, move_y
-        out.holding, out.hold_stage = holding, hold_stage
-        out.hold_from_left = hold_from and t and hold_from - t or nil
-        out.hold_until_left = hold_from and hold_until and t and hold_until - t or nil
-        out.stale = stale_x ~= nil
-        out.unverified = unverified == true
-        out.ack_wait_age = ack_wait and t and t - ack_wait or nil
     end
 
     function module.settings_changed(id)
@@ -361,7 +411,7 @@ return function(ctx)
             if not widgets then
                 widgets = {}
                 for i = 1, cw * ch do
-                    widgets[i] = UIWidget.init("nb_search_" .. i, UIWidget.create_definition({{
+                    widgets[i] = UIWidget.init("tnb_search_" .. i, UIWidget.create_definition({{
                         pass_type = "texture", style_id = "highlight",
                         value = "content/ui/materials/backgrounds/scanner/scanner_decode_symbol_highlight",
                         style = { hdr = true, color = { 110, 255, 165, 0 } },

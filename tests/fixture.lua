@@ -1,8 +1,6 @@
--- NoBrainer adaptation of BetterBrainer's tests/fixture.lua: the same historical fixture text
--- (tools/tests/better_brainer_spec.lua, never its legacy suite) loads NoBrainer.lua instead.
--- Search, Drill and Symbols run as BetterBrainer-shaped modules through NoBrainer_core.lua; the legacy
--- Frequency, Smart Seed Reroll and input route also load. Servo skull, Scan and Balance hook engine
--- classes this fixture does not load and are skipped.
+-- NoBrainer copy of BetterBrainer's tests/fixture.lua: the same historical fixture text (never its legacy suite),
+-- pointed at NoBrainer's files. The servo skull module needs engine settings this fixture does not load; it is
+-- replaced by an inert module.
 local M = { source = "darktide-source/" }
 do -- Patch for the spec banners; darktide-source/ is a git clone of the game source.
     local ok, pipe = pcall(io.popen, "git -C darktide-source log -1 --format=%s")
@@ -51,70 +49,28 @@ fixture_text = M.replace(fixture_text, "{ rewind_ms = function() return f.rewind
 fixture_text = M.replace(fixture_text, 'local ROOT = "mods/active/BetterBrainer/scripts/mods/BetterBrainer/"',
     'local ROOT = "' .. ROOT .. '"')
 fixture_text = M.replace(fixture_text, 'eq(name, "BetterBrainer", "mod name")', 'eq(name, "NoBrainer", "mod name")')
--- NoBrainer's legacy input route keeps its PlayerUnitInputExtension.get hook (Balance command history).
-fixture_text = M.replace(fixture_text,
-    'assert(target ~= f.Extension and target ~= f.Human, "local extension override is forbidden")',
-    'assert(target ~= f.Human, "local extension override is forbidden")')
+fixture_text = M.replace(fixture_text, 'path:match("^BetterBrainer/scripts/mods/BetterBrainer/")',
+    'path:match("^NoBrainer/scripts/mods/NoBrainer/")')
+fixture_text = M.replace(fixture_text, '        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()\n',
+    '        if name == "servo_skull" then\n'
+    .. '            return function() return { reset = function() end, update = function() end } end\n'
+    .. '        end\n'
+    .. '        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()\n')
+fixture_text = M.replace(fixture_text, 'if name == "BetterBrainer_data" then return value end',
+    'if name == "NoBrainer_data" then return value end')
 fixture_text = M.replace(fixture_text, 'loadfile(ROOT .. "BetterBrainer_data.lua", "t", env)',
     'loadfile(ROOT .. "NoBrainer_data.lua", "t", env)')
 fixture_text = M.replace(fixture_text, 'assert(loadfile(ROOT .. "BetterBrainer.lua", "t", env))()',
     'assert(loadfile(ROOT .. "NoBrainer.lua", "t", env))()')
--- Settings already migrated to the 1-5 speed schema (NoBrainer.lua would otherwise remap test speeds).
+-- Settings already on the 1-5 speed schema (NoBrainer.lua would otherwise migrate the test speeds).
 fixture_text = M.replace(fixture_text, "    defaults(data.options.widgets)\n",
     "    defaults(data.options.widgets)\n    f.values._speed_schema_v2 = true\n")
-fixture_text = M.replace(fixture_text, "    function mod:is_enabled() return f.enabled end\n", [[
-    function mod:is_enabled() return f.enabled end
-    function mod:set(id, value) f.values[id] = value end
-    function mod:warning(...) error("unexpected mod:warning " .. string.format(...)) end
-    function mod:echo(text) error("unexpected mod:echo " .. tostring(text)) end
-]])
-do
-    local first = assert(fixture_text:find("    function mod:io_dofile(path)\n", 1, true))
-    local last = assert(fixture_text:find("    local function wrap_solo()\n", first, true))
-    fixture_text = fixture_text:sub(1, first - 1) .. [[
-    local SKIP = { NoBrainer_minigame_servo_skull = true, NoBrainer_minigame_scan = true,
-        NoBrainer_minigame_balance = true }
-    local KEYS = { NoBrainer_minigame_decode_symbols = "symbols", NoBrainer_minigame_decode_search = "search",
-        NoBrainer_minigame_drill = "drill" }
-    function mod:io_dofile(path)
-        assert(path:match("^NoBrainer/scripts/mods/NoBrainer/"), "invalid DMF path: " .. path)
-        f.paths[path] = (f.paths[path] or 0) + 1
-        local name = path:match("([^/]+)$")
-        if SKIP[name] then return true end
-        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()
-        if type(value) ~= "function" then return value end
-        local key = KEYS[name] or name
-        return function(ctx)
-            f.ctx = ctx
-            local module = value(ctx)
-            f.modules[key] = module
-            if module.observe then
-                local original = module.observe
-                module.observe = function(...)
-                    f.observations[key] = (f.observations[key] or 0) + 1
-                    f.observed_times[key] = select(2, ...)
-                    return original(...)
-                end
-            end
-            if module.input then
-                local original = module.input
-                module.input = function(action, value, t, source)
-                    f.input_calls[key] = (f.input_calls[key] or 0) + 1
-                    f.input_times[key] = t
-                    return original(action, value, t, source)
-                end
-            end
-            return module
-        end
-    end
-]] .. fixture_text:sub(last)
-end
+fixture_text = M.replace(fixture_text, "    function mod:is_enabled() return f.enabled end\n",
+    "    function mod:is_enabled() return f.enabled end\n    function mod:set(id, value) f.values[id] = value end\n")
 
 -- Snapshot once per process: every fixture sees identical runtime module text.
 local runtime = {}
-for _, name in ipairs({ "NoBrainer", "NoBrainer_data", "NoBrainer_core", "NoBrainer_input",
-    "NoBrainer_minigame_decode_symbols", "NoBrainer_minigame_decode_search", "NoBrainer_minigame_drill",
-    "NoBrainer_minigame_frequency", "NoBrainer_decode_symbols_reroll" }) do
+for _, name in ipairs({ "NoBrainer", "NoBrainer_data", "symbols", "search", "frequency", "scan", "drill", "balance" }) do
     runtime[ROOT .. name .. ".lua"] = M.read(ROOT .. name .. ".lua")
 end
 
@@ -153,6 +109,15 @@ function M.factory()
             if callback then callback(Extension) end
         end
         hook_state()
+        -- The historical state machine stub predates current_state_name (character_state_machine_extension.lua:275-277).
+        local state = f.state
+        function f:state(mg, player)
+            local result = state(self, mg, player)
+            self.extensions[player.player_unit].character_state_machine_system.current_state_name = function()
+                return "minigame"
+            end
+            return result
+        end
         local reload, tick, consume, dispatch = f.reload, f.tick, f.consume, f.dispatch
         function f:reload(...)
             local results = M.pack(reload(self, ...))
