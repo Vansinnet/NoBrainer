@@ -1,0 +1,3 @@
+[submodule "BetterBrainer"]
+	path = BetterBrainer
+	url = https://github.com/Vansinnet/BetterBrainer.git

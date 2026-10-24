@@ -1,4 +1,9 @@
 local mod = get_mod("NoBrainer")
+local import = mod:io_dofile("NoBrainer/scripts/mods/NoBrainer/import")
+
+-- BetterBrainer's options (its name and description come from NoBrainer's localization), plus NoBrainer's own.
+local data = import("BetterBrainer_data")
+local widgets = data.options.widgets
 
 local function checkbox(id, default)
     return {
@@ -20,69 +25,27 @@ local function numeric(id, default, minimum, maximum)
     }
 end
 
-local function group(id, widgets)
-    return {
-        setting_id = id,
-        type = "group",
-        title = id,
-        sub_widgets = widgets,
-    }
+local function find(list, id)
+    for i = 1, #list do
+        if list[i].setting_id == id then return list[i], i end
+    end
+    error("BetterBrainer option missing: " .. id)
 end
 
-return {
-    name = mod:localize("mod_name"),
-    description = mod:localize("mod_description"),
-    is_togglable = true,
-    allow_rehooking = true,
-    options = {
-        widgets = {
-            {
-                setting_id = "language",
-                type = "dropdown",
-                default_value = "auto",
-                require_restart = true,
-                tooltip = "language_tooltip",
-                options = {
-                    { text = "language_auto", value = "auto" },
-                    { text = "language_en", value = "en" },
-                    { text = "language_zh_cn", value = "zh-cn" },
-                    { text = "language_zh_tw", value = "zh-tw" },
-                    { text = "language_ru", value = "ru" },
-                },
-            },
-            group("servo_skull_group", {
-                checkbox("enable_servo_skull_auto_hack", true),
-                checkbox("servo_skull_require_line_of_sight", true),
-                numeric("servo_skull_command_range", 25, 5, 100),
-            }),
-            group("decode_symbols_group", {
-                checkbox("enable_decode_highlight", true),
-                checkbox("enable_decode_auto", true),
-                numeric("decode_reroll_limit", 0, 0, 8),
-            }),
-            group("matching_group", {
-                checkbox("enable_matching", true),
-                checkbox("enable_expedition_auto_solve", true),
-                numeric("expedition_solve_speed", 1, 1, 5),
-                checkbox("enable_expedition_reopen", false),
-            }),
-            group("scan_group", {
-                checkbox("enable_scan", true),
-                checkbox("enable_auto_scan", true),
-            }),
-            group("balance_group", {
-                checkbox("enable_balance", true),
-            }),
-            group("drill_group", {
-                checkbox("enable_drill", true),
-                checkbox("enable_drill_auto", true),
-                numeric("drill_solve_speed", 1, 1, 5),
-            }),
-            group("frequency_group", {
-                checkbox("enable_frequency_highlight", true),
-                checkbox("enable_frequency_auto", true),
-                numeric("frequency_solve_speed", 1, 1, 5),
-            }),
-        },
+local symbols = find(widgets, "decode_symbols_group").sub_widgets
+local _, reroll = find(symbols, "decode_reroll_limit")
+table.insert(symbols, reroll + 1, checkbox("enable_decode_smart_reroll", true))
+
+local _, language = find(widgets, "language")
+table.insert(widgets, language + 1, {
+    setting_id = "servo_skull_group",
+    type = "group",
+    title = "servo_skull_group",
+    sub_widgets = {
+        checkbox("enable_servo_skull_auto_hack", true),
+        checkbox("servo_skull_require_line_of_sight", true),
+        numeric("servo_skull_command_range", 25, 5, 100),
     },
-}
+})
+
+return data

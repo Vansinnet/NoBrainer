@@ -1,17 +1,15 @@
 local mod = get_mod("NoBrainer")
+local import = mod:io_dofile("NoBrainer/scripts/mods/NoBrainer/import")
 
--- Traditional Chinese translation by SyuanTsai:
--- https://github.com/SyuanTsai/Warhammer-40-000-DARKTIDE-Mods
-local localizations = {
+-- BetterBrainer's strings, already narrowed to the chosen language, plus NoBrainer's own.
+local localizations = import("BetterBrainer_localization")
+
+local own = {
     mod_name = { en = "No Brainer", ["zh-tw"] = "免動腦", ["zh-cn"] = "无脑操作", ru = "Быстрое решение" },
     mod_description = { en = "Automates and enhances all Darktide minigames: Decode Symbols, Decode Search, Auspex Scan, Train Balance, Tree Drill, and Frequency Matching.", ["zh-tw"] = "自動化並強化 Darktide 所有小遊戲：符號解碼、搜尋解碼、占卜儀掃描、列車平衡、樹狀鑽探與頻率配對。", ["zh-cn"] = "自动化并强化 Darktide 所有小游戏：符号解码、搜索解码、占卜仪扫描、列车平衡、树状钻探与频率配对。", ru = "No Brainer - Автоматизирует и улучшает все мини-игры Darktide: расшифровка символов, поиск, сканирование ауспексом, балансировка на поезде, бурение дерева и подбор частоты." },
-    language = { en = "Language", ["zh-tw"] = "語言", ["zh-cn"] = "语言", ru = "Язык" },
-    language_tooltip = { en = "Select Automatic to follow the game's language. Manual Traditional Chinese requires Darktide's language to also be set to Traditional Chinese so the game loads a font with Chinese characters. Otherwise, the text may appear as squares. Restart the game after changing this setting.", ["zh-tw"] = "選擇自動以跟隨遊戲語言。手動選擇繁體中文時，Darktide 的語言也必須設為繁體中文，遊戲才會載入支援中文字元的字型，否則文字可能顯示為方框。變更此設定後請重新啟動遊戲。", ["zh-cn"] = "选择自动以跟随游戏语言。手动选择简体中文时，Darktide 的语言也必须设为简体中文，游戏才会加载支持中文字符的字体，否则文字可能显示为方框。更改此设置后请重新启动游戏。", ru = "Выберите «Авто», чтобы следовать языку игры. Ручной выбор русского языка требует, чтобы в Darktide также был установлен русский язык, чтобы игра загрузила шрифт с кириллицей. В противном случае текст может отображаться квадратами. После изменения настройки перезапустите игру." },
-    language_auto = { en = "Automatic (Game Language)", ["zh-tw"] = "自動（遊戲語言）", ["zh-cn"] = "自动（游戏语言）", ru = "Авто (язык игры)" },
-    language_en = { en = "English", ["zh-tw"] = "English", ["zh-cn"] = "英语", ru = "Английский" },
-    language_zh_cn = { en = "Simplified Chinese", ["zh-tw"] = "簡體中文", ["zh-cn"] = "简体中文", ru = "Упрощённый китайский" },
-    language_zh_tw = { en = "Traditional Chinese", ["zh-tw"] = "繁體中文", ["zh-cn"] = "繁体中文", ru = "Традиционный китайский" },
-    language_ru = { en = "Russian", ["zh-tw"] = "俄語", ["zh-cn"] = "俄语", ru = "Русский" },
+
+    enable_decode_smart_reroll = { en = "Smart Seed Reroll", ["zh-tw"] = "智慧重抽種子", ["zh-cn"] = "智能重抽种子", ru = "Умный переброс по семени" },
+    enable_decode_smart_reroll_tooltip = { en = "Rerolls with Reroll Slow Boards decide from the exact upcoming boards: each board follows from the terminal's seed, which is read on the host or rebuilt from the boards seen. A board is rerolled only when the known next boards are expected to be faster. Without a known seed, the average board is used as before.", ["zh-tw"] = "「重抽慢速盤面」的重抽改依實際的後續盤面決定：每個盤面都由終端的種子推得，主機直接讀取，其他情況則由已見盤面重建。只有在已知的後續盤面預計更快時才會重抽。無法得知種子時，仍照舊以平均盤面判斷。", ["zh-cn"] = "“重抽慢速盘面”的重抽改依实际的后续盘面决定：每个盘面都由终端的种子推得，主机直接读取，其他情况则由已见盘面重建。只有在已知的后续盘面预计更快时才会重抽。无法得知种子时，仍照旧以平均盘面判断。", ru = "Перебросы «Перебрасывать медленные поля» решаются по точным следующим полям: каждое поле следует из семени терминала, которое читается на хосте или восстанавливается по увиденным полям. Поле перебрасывается, только если известные следующие поля ожидаются быстрее. Без известного семени, как и раньше, используется среднее поле." },
 
     servo_skull_group = { en = "Servo Skull", ["zh-tw"] = "伺服顱骨", ["zh-cn"] = "伺服颅骨", ru = "Серво-череп" },
     enable_servo_skull_auto_hack = { en = "Auto-Start Hacking", ["zh-tw"] = "自動開始駭入", ["zh-cn"] = "自动开始骇入", ru = "Автозапуск взлома" },
@@ -20,60 +18,17 @@ local localizations = {
     servo_skull_require_line_of_sight_tooltip = { en = "When enabled, the minigame must be visible before the servo skull is ordered. Disable to allow orders through walls, floors, and ceilings.", ["zh-tw"] = "啟用時，必須能直接看見小遊戲才會對伺服顱骨下達指令。停用後可穿過牆壁、地板與天花板下達指令。", ["zh-cn"] = "启用时，必须能直接看见小游戏才会对伺服颅骨下达指令。禁用后可穿过墙壁、地板与天花板下达指令。", ru = "При включении мини-игра должна быть видна, прежде чем серво-череп получит команду. Отключите, чтобы разрешить команды сквозь стены, полы и потолки." },
     servo_skull_command_range = { en = "Command Range", ["zh-tw"] = "指令範圍", ["zh-cn"] = "指令范围", ru = "Дальность отправки" },
     servo_skull_command_range_tooltip = { en = "Maximum automatic command distance in metres. Defaults to the servo skull ability's normal 25-metre targeting range.", ["zh-tw"] = "自動下達指令的最大距離（公尺）。預設為伺服顱骨能力的一般 25 公尺鎖定範圍。", ["zh-cn"] = "自动下达指令的最大距离（米）。默认为伺服颅骨能力的一般 25 米锁定范围。", ru = "Максимальная автоматическая дальность команды в метрах. По умолчанию - обычная дальность прицеливания способности сервочерепа 25 метров." },
-
-    decode_symbols_group = { en = "Decode Symbols", ["zh-tw"] = "符號解碼", ["zh-cn"] = "符号解码", ru = "Расшифровка символов" },
-    enable_decode_highlight = { en = "Highlight Solution", ["zh-tw"] = "標示解答", ["zh-cn"] = "标示解答", ru = "Подсветка решения" },
-    enable_decode_highlight_tooltip = { en = "Highlights the correct columns for upcoming rows.", ["zh-tw"] = "標示接下來列的正確欄位。", ["zh-cn"] = "标示接下来列的正确栏位。", ru = "Подсвечивает правильные столбцы для предстоящих строк." },
-    enable_decode_auto = { en = "Auto-Solve", ["zh-tw"] = "自動解題", ["zh-cn"] = "自动解题", ru = "Авторешение" },
-    enable_decode_auto_tooltip = { en = "Automatically presses interact when the cursor is on target.", ["zh-tw"] = "游標位於目標上時自動按下互動鍵。", ["zh-cn"] = "光标位于目标上时自动按下互动键。", ru = "Автоматически нажимает взаимодействие, когда курсор находится на цели." },
-    decode_reroll_limit = { en = "Reroll Slow Boards", ["zh-tw"] = "重抽慢速盤面", ["zh-cn"] = "重抽慢速盘面", ru = "Перебрасывать медленные поля" },
-    decode_reroll_limit_tooltip = { en = "Every time the terminal opens it deals a new board. With Auto-Solve on, a board expected to take clearly longer than average is closed and the terminal reopened, at most this many times per hack (0 = off). The auspex briefly closes and reopens each time.", ["zh-tw"] = "每次開啟終端都會產生新的盤面。啟用自動解題時，若預計某個盤面明顯比平均更慢，會關閉並重新開啟終端，每次駭入最多這麼多次（0＝關閉）。每次占卜儀都會短暫關閉再開啟。", ["zh-cn"] = "每次开启终端都会产生新的盘面。启用自动解题时，若预计某个盘面明显比平均更慢，会关闭并重新开启终端，每次入侵最多这么多次（0＝关闭）。每次占卜仪都会短暂关闭再开启。", ru = "При каждом открытии терминала выдаётся новое поле. При включённом авторешении поле, которое займёт заметно больше среднего, закрывается, и терминал открывается снова, не более указанного числа раз за взлом (0 = выкл.). Ауспекс каждый раз ненадолго закрывается и открывается." },
-
-    matching_group = { en = "Decode Search (Matching)", ["zh-tw"] = "搜尋解碼（配對）", ["zh-cn"] = "搜索解码（配对）", ru = "Поиск (сопоставление)" },
-    enable_matching = { en = "Highlight Match", ["zh-tw"] = "標示配對", ["zh-cn"] = "标示配对", ru = "Подсветка совпадения" },
-    enable_matching_tooltip = { en = "Highlights the region on the board that matches the target pattern.", ["zh-tw"] = "標示面板上符合目標圖案的區域。", ["zh-cn"] = "标示面板上符合目标图案的区域。", ru = "Подсвечивает область на панели, соответствующую целевому шаблону." },
-    enable_expedition_auto_solve = { en = "Auto-Solve", ["zh-tw"] = "自動解題", ["zh-cn"] = "自动解题", ru = "Авторешение" },
-    enable_expedition_auto_solve_tooltip = { en = "Automatically moves the cursor to the target and submits.", ["zh-tw"] = "自動將游標移至目標並提交。", ["zh-cn"] = "自动将光标移至目标并提交。", ru = "Автоматически перемещает курсор к цели и подтверждает." },
-    expedition_solve_speed = { en = "Auto-Solve Speed", ["zh-tw"] = "自動解題速度", ["zh-cn"] = "自动解题速度", ru = "Скорость авторешения" },
-    expedition_solve_speed_tooltip = { en = "Auto-solve pace (1=moderate, 5=fastest). Every speed uses the same precise solver and diagonal movement.", ["zh-tw"] = "自動解題速度（1＝適中，5＝最快）。所有速度都使用相同的精準解題器與對角移動。", ["zh-cn"] = "自动解题速度（1＝适中，5＝最快）。所有速度都使用相同的精准解题器与对角移动。", ru = "Темп авторешения (1=умеренный, 5=самый быстрый). Все скорости используют один и тот же точный решатель и диагональное движение." },
-    enable_expedition_reopen = { en = "Skip Stage Transitions", ["zh-tw"] = "略過階段過場", ["zh-cn"] = "跳过阶段过场", ru = "Пропускать переходы между этапами" },
-    enable_expedition_reopen_tooltip = { en = "At speed 5, closes and reopens the terminal right after each solved stage. The new session keeps the stage, starts at once and puts the cursor in the centre, which is faster than waiting for the transition. The auspex briefly closes and reopens.", ["zh-tw"] = "在速度 5 時，每完成一個階段後立即關閉並重新開啟終端。新的工作階段會保留進度、立即開始並將游標置中，比等待過場更快。占卜儀會短暫關閉再開啟。", ["zh-cn"] = "在速度 5 时，每完成一个阶段后立即关闭并重新开启终端。新的会话会保留进度、立即开始并将光标居中，比等待过场更快。占卜仪会短暂关闭再开启。", ru = "На скорости 5 закрывает и сразу снова открывает терминал после каждого решённого этапа. Новый сеанс сохраняет этап, начинается сразу и ставит курсор в центр, что быстрее ожидания перехода. Ауспекс ненадолго закрывается и открывается." },
-
-    scan_group = { en = "Auspex Scan", ["zh-tw"] = "占卜儀掃描", ["zh-cn"] = "占卜仪扫描", ru = "Сканирование ауспексом" },
-    enable_scan = { en = "Mark Scannable Objects", ["zh-tw"] = "標記可掃描物件", ["zh-cn"] = "标记可扫描物件", ru = "Отмечать сканируемые объекты" },
-    enable_scan_tooltip = { en = "Applies outline and highlight to scannable objects during auspex scanning.", ["zh-tw"] = "使用占卜儀掃描時，為可掃描物件套用輪廓與標示。", ["zh-cn"] = "使用占卜仪扫描时，为可扫描物件套用轮廓与标示。", ru = "Показывает контур и подсветку на сканируемых объектах во время сканирования ауспексом." },
-    enable_auto_scan = { en = "Auto-Scan", ["zh-tw"] = "自動掃描", ["zh-cn"] = "自动扫描", ru = "Автосканирование" },
-    enable_auto_scan_tooltip = { en = "Automatically holds the scan action until completion when an active target is in range and line of sight.", ["zh-tw"] = "當啟用中的掃描目標進入範圍且位於視線內時，自動按住掃描動作直到完成。", ["zh-cn"] = "当启用中的扫描目标进入范围且位于视线内时，自动按住扫描动作直到完成。", ru = "Автоматически удерживает сканирование до завершения, когда активная цель находится в пределах досягаемости и прямой видимости." },
-
-    balance_group = { en = "Train (Balance)", ["zh-tw"] = "列車（平衡）", ["zh-cn"] = "列车（平衡）", ru = "Поезд (баланс)" },
-    enable_balance = { en = "Auto-Balance", ["zh-tw"] = "自動平衡", ["zh-cn"] = "自动平衡", ru = "Автобалансировка" },
-    enable_balance_tooltip = { en = "Automatically steers the dot toward the center.", ["zh-tw"] = "自動將圓點導向中央。", ["zh-cn"] = "自动将圆点导向中央。", ru = "Автоматически направляет точку к центру." },
-
-    drill_group = { en = "Tree (Drill)", ["zh-tw"] = "樹狀圖（鑽探）", ["zh-cn"] = "树状图（钻探）", ru = "Дерево (бурение)" },
-    enable_drill = { en = "Highlight Correct Target", ["zh-tw"] = "標示正確目標", ["zh-cn"] = "标示正确目标", ru = "Подсветка правильной цели" },
-    enable_drill_tooltip = { en = "Shows which node is the correct one by highlighting it white.", ["zh-tw"] = "將正確節點標示為白色。", ["zh-cn"] = "将正确节点标示为白色。", ru = "Показывает, какой узел правильный, подсвечивая его белым." },
-    enable_drill_auto = { en = "Auto-Solve", ["zh-tw"] = "自動解題", ["zh-cn"] = "自动解题", ru = "Авторешение" },
-    enable_drill_auto_tooltip = { en = "Automatically moves to the correct node and submits.", ["zh-tw"] = "自動移至正確節點並提交。", ["zh-cn"] = "自动移至正确节点并提交。", ru = "Автоматически переходит к правильному узлу и подтверждает." },
-    drill_solve_speed = { en = "Auto-Solve Speed", ["zh-tw"] = "自動解題速度", ["zh-cn"] = "自动解题速度", ru = "Скорость авторешения" },
-    drill_solve_speed_tooltip = { en = "Auto-solve pace (1=normal manual pace, 5=fastest). Every speed uses the same precise solver.", ["zh-tw"] = "自動解題速度（1＝一般手動速度，5＝最快）。所有速度都使用相同的精準解題器。", ["zh-cn"] = "自动解题速度（1＝一般手动速度，5＝最快）。所有速度都使用相同的精准解题器。", ru = "Темп авторешения (1=обычный ручной темп, 5=самый быстрый). Все скорости используют один и тот же точный решатель." },
-
-    frequency_group = { en = "Frequency Matching", ["zh-tw"] = "頻率配對", ["zh-cn"] = "频率配对", ru = "Подбор частоты" },
-    enable_frequency_highlight = { en = "Show Directional Arrows", ["zh-tw"] = "顯示方向箭頭", ["zh-cn"] = "显示方向箭头", ru = "Показывать направляющие стрелки" },
-    enable_frequency_highlight_tooltip = { en = "Displays orange arrows indicating which direction to push the waveform toward the target.", ["zh-tw"] = "顯示橘色箭頭，指示應將波形往哪個方向推向目標。", ["zh-cn"] = "显示橙色箭头，指示应将波形往哪个方向推向目标。", ru = "Отображает оранжевые стрелки, указывающие, в каком направлении подводить сигнал к цели." },
-    enable_frequency_auto = { en = "Auto-Solve", ["zh-tw"] = "自動解題", ["zh-cn"] = "自动解题", ru = "Авторешение" },
-    enable_frequency_auto_tooltip = { en = "Automatically steers the waveform toward the target and submits when aligned.", ["zh-tw"] = "自動將波形導向目標，對齊後提交。", ["zh-cn"] = "自动将波形导向目标，对齐后提交。", ru = "Автоматически направляет сигнал к цели и подтверждает при совпадении." },
-    frequency_solve_speed = { en = "Auto-Solve Speed", ["zh-tw"] = "自動解題速度", ["zh-cn"] = "自动解题速度", ru = "Скорость авторешения" },
-    frequency_solve_speed_tooltip = { en = "Auto-solve pace (1=normal manual pace, 5=fastest). Every speed uses the same precise deterministic steering.", ["zh-tw"] = "自動解題速度（1＝一般手動速度，5＝最快）。所有速度都使用相同的精準固定導引。", ["zh-cn"] = "自动解题速度（1＝一般手动速度，5＝最快）。所有速度都使用相同的精准固定导引。", ru = "Темп авторешения (1=обычный ручной темп, 5=самый быстрый). Все скорости используют один и тот же точный детерминированный алгоритм." },
 }
 
 local language = mod:get("language")
-if language == "en" or language == "zh-tw" or language == "zh-cn" or language == "ru" then
-    for _, translations in pairs(localizations) do
+for id, translations in pairs(own) do
+    if language == "en" or language == "zh-tw" or language == "zh-cn" or language == "ru" then
         translations.en = translations[language] or translations.en
         translations["zh-tw"] = nil
         translations["zh-cn"] = nil
         translations.ru = nil
     end
+    localizations[id] = translations
 end
 
 return localizations

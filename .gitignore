@@ -31,3 +31,6 @@ Thumbs.db
 Desktop.ini
 
 # Mod-specific (keep below this line)
+
+# Darktide source fetched by the tests (tests/darktide_source.lua)
+/tests/.darktide-source/

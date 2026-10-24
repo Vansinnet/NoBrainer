@@ -1,4 +1,4 @@
--- Run from the workspace root with tools/luajit/luajit.exe (see README.md).
+-- Run from the repository root with LuaJIT: luajit tests/servo_skull_spec.lua
 -- Servo skull ordering as a core module: settings come from ctx.settings, time from update(dt, t). Engine
 -- settings, the smart tag system, companion state and physics are stubs.
 assert(jit and jit.version, "LuaJIT required")
@@ -44,7 +44,7 @@ local function fixture(settings)
         player = { local_player_safe = function() return { player_unit = player_unit } end },
         state = { extension = { system = function(_, name) assert(name == "smart_tag_system"); return smart_tag_system end } },
     }
-    local chunk = assert(loadfile("mods/active/NoBrainer/scripts/mods/NoBrainer/servo_skull.lua"))
+    local chunk = assert(loadfile("scripts/mods/NoBrainer/servo_skull.lua"))
     setfenv(chunk, env)
     local ctx = { settings = settings }
     f.module = chunk()(ctx)

@@ -1,14 +1,22 @@
--- NoBrainer copy of BetterBrainer's tests/fixture.lua: the same historical fixture text (never its legacy suite),
--- pointed at NoBrainer's files. The servo skull module needs engine settings this fixture does not load; it is
--- replaced by an inert module.
-local M = { source = "darktide-source/" }
-do -- Patch for the spec banners; darktide-source/ is a git clone of the game source.
-    local ok, pipe = pcall(io.popen, "git -C darktide-source log -1 --format=%s")
+-- NoBrainer's version of BetterBrainer/tests/fixture.lua, run from the repository root: the same historical
+-- fixture text (never its legacy suite), with NoBrainer's core loading BetterBrainer's files from the submodule.
+-- Differences from BetterBrainer's fixture:
+-- - The game source comes from tests/darktide_source.lua, fetched file by file on first use.
+-- - The fixture's mod is a DMF-like class instance, so import.lua can redirect its io_dofile like DMF's.
+-- - The servo skull needs engine settings this fixture does not load; it is replaced by an inert module.
+local source = dofile("tests/darktide_source.lua")
+local M = {}
+-- The source root holding `path` (inside the source), fetching the file on first use.
+function M.source(path) return source.root({ path }) end
+do -- Patch for the spec banners.
+    local root = M.source("scripts/foundation/utilities/class.lua")
+    local ok, pipe = pcall(io.popen, 'git -C "' .. root .. '" log -1 --format=%s')
     local line = ok and pipe and pipe:read("*l")
     if ok and pipe then pipe:close() end
     FIXTURE_SOURCE_VERSION = line and line:match("Version ([%d%.]+)") or "unknown"
 end
-local ROOT = "mods/active/NoBrainer/scripts/mods/NoBrainer/"
+local ROOT = "scripts/mods/NoBrainer/"
+local BETTER_ROOT = "BetterBrainer/scripts/mods/BetterBrainer/"
 
 function M.read(path)
     local file = assert(io.open(path, "rb"))
@@ -39,29 +47,46 @@ function M.copy(value)
     return result
 end
 
-local historical = M.read("tools/tests/better_brainer_spec.lua")
+local historical = M.read("tests/better_brainer_spec.lua")
 local boundary = assert(historical:find("\nlocal tests, failed = 0, 0", 1, true), "historical fixture boundary")
 local fixture_text = historical:sub(1, boundary - 1)
 assert(fixture_text:match("return f\nend\n$"), "historical fixture ending changed")
 fixture_text = M.replace(fixture_text, "env.math.atan2 = math.atan", "env.math.atan2 = math.atan2")
 fixture_text = M.replace(fixture_text, "{ rewind_ms = function() return f.rewind or 0 end }",
     "{ rewind_seconds = function() return f.rewind or 0 end }")
-fixture_text = M.replace(fixture_text, 'local ROOT = "mods/active/BetterBrainer/scripts/mods/BetterBrainer/"',
-    'local ROOT = "' .. ROOT .. '"')
+fixture_text = M.replace(fixture_text, 'local ROOT = "mods/active/BetterBrainer/scripts/mods/BetterBrainer/"\n',
+    'local SOLVERS = { symbols = true, search = true, drill = true, frequency = true, balance = true, scan = true }\n')
+fixture_text = M.replace(fixture_text, "    local mod = {}\n",
+    "    local Mod = {}\n    Mod.__index = Mod\n    local mod = setmetatable({}, Mod)\n")
 fixture_text = M.replace(fixture_text, 'eq(name, "BetterBrainer", "mod name")', 'eq(name, "NoBrainer", "mod name")')
-fixture_text = M.replace(fixture_text, 'path:match("^BetterBrainer/scripts/mods/BetterBrainer/")',
-    'path:match("^NoBrainer/scripts/mods/NoBrainer/")')
-fixture_text = M.replace(fixture_text, '        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()\n',
-    '        if name == "servo_skull" then\n'
-    .. '            return function() return { reset = function() end, update = function() end } end\n'
-    .. '        end\n'
-    .. '        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()\n')
-fixture_text = M.replace(fixture_text, 'if name == "BetterBrainer_data" then return value end',
-    'if name == "NoBrainer_data" then return value end')
-fixture_text = M.replace(fixture_text, 'loadfile(ROOT .. "BetterBrainer_data.lua", "t", env)',
-    'loadfile(ROOT .. "NoBrainer_data.lua", "t", env)')
+fixture_text = M.replace(fixture_text, [[
+    function mod:io_dofile(path)
+        assert(path:match("^BetterBrainer/scripts/mods/BetterBrainer/"), "invalid DMF path: " .. path)
+        f.paths[path] = (f.paths[path] or 0) + 1
+        local name = path:match("([^/]+)$")
+        local value = assert(loadfile(ROOT .. name .. ".lua", "t", env))()
+        if name == "BetterBrainer_data" then return value end
+]], [[
+    function Mod:io_dofile(path)
+        local file = path:match("^NoBrainer/(scripts/mods/NoBrainer/[^/]+)$")
+            or path:match("^NoBrainer/(BetterBrainer/scripts/mods/BetterBrainer/[^/]+)$")
+        assert(file, "invalid DMF path: " .. path)
+        f.paths[path] = (f.paths[path] or 0) + 1
+        local name = path:match("([^/]+)$")
+        if name == "servo_skull" then
+            return function()
+                return { reset = function() end, update = function() end, settings_changed = function() end }
+            end
+        end
+        local value = assert(loadfile(file .. ".lua", "t", env))()
+        if not SOLVERS[name] then return value end
+]])
+fixture_text = M.replace(fixture_text, "    function mod:hook(target, method, callback)",
+    "    Mod.io_dofile_unsafe = Mod.io_dofile\n    function mod:hook(target, method, callback)")
+fixture_text = M.replace(fixture_text, 'local data = assert(loadfile(ROOT .. "BetterBrainer_data.lua", "t", env))()',
+    'local data = mod:io_dofile("NoBrainer/scripts/mods/NoBrainer/NoBrainer_data")')
 fixture_text = M.replace(fixture_text, 'assert(loadfile(ROOT .. "BetterBrainer.lua", "t", env))()',
-    'assert(loadfile(ROOT .. "NoBrainer.lua", "t", env))()')
+    'mod:io_dofile("NoBrainer/scripts/mods/NoBrainer/NoBrainer")')
 -- Settings already on the 1-5 speed schema (NoBrainer.lua would otherwise migrate the test speeds).
 fixture_text = M.replace(fixture_text, "    defaults(data.options.widgets)\n",
     "    defaults(data.options.widgets)\n    f.values._speed_schema_v2 = true\n")
@@ -70,8 +95,11 @@ fixture_text = M.replace(fixture_text, "    function mod:is_enabled() return f.e
 
 -- Snapshot once per process: every fixture sees identical runtime module text.
 local runtime = {}
-for _, name in ipairs({ "NoBrainer", "NoBrainer_data", "symbols", "search", "frequency", "scan", "drill", "balance" }) do
+for _, name in ipairs({ "NoBrainer", "NoBrainer_data", "import", "seed_reroll" }) do
     runtime[ROOT .. name .. ".lua"] = M.read(ROOT .. name .. ".lua")
+end
+for _, name in ipairs({ "BetterBrainer", "BetterBrainer_data", "symbols", "search", "frequency", "scan", "drill", "balance" }) do
+    runtime[BETTER_ROOT .. name .. ".lua"] = M.read(BETTER_ROOT .. name .. ".lua")
 end
 
 function M.factory()
@@ -79,13 +107,13 @@ function M.factory()
     compat_table.pack, compat_table.unpack = M.pack, unpack
     local outer = setmetatable({ table = compat_table }, { __index = _G })
     outer.loadfile = function(path, mode, env)
-        if path:sub(1, 16) == "darktide-source/" then path = M.source .. path:sub(17) end
+        if path:sub(1, 16) == "darktide-source/" then path = M.source(path:sub(17)) .. path:sub(17) end
         local text = runtime[path] or M.read(path)
         local chunk, err = loadstring(text, "@" .. path)
         if chunk then setfenv(chunk, env or outer) end
         return chunk, err
     end
-    local chunk = assert(loadstring(fixture_text .. "\nreturn fixture\n", "@tools/tests/better_brainer_spec.lua"))
+    local chunk = assert(loadstring(fixture_text .. "\nreturn fixture\n", "@tests/better_brainer_spec.lua"))
     setfenv(chunk, outer)
     local make = chunk()
     return function(...)
@@ -182,14 +210,16 @@ function M.scan_fixture(factory)
         if path == "scripts/utilities/alternate_fire" or path == "scripts/utilities/weapon/weapon_template" then return {} end
         if not allowed[path] then return original_require(path) end
         if not cache[path] then
-            local chunk = assert(loadstring(M.read(M.source .. path .. ".lua"), "@" .. M.source .. path .. ".lua"))
+            local file = path .. ".lua"
+            local chunk = assert(loadstring(M.read(M.source(file) .. file), "@" .. M.source(file) .. file))
             setfenv(chunk, env)
             cache[path] = chunk()
             if f.deferred[path] then f.deferred[path](cache[path]) end
         end
         return cache[path]
     end
-    local template = M.read(M.source .. "scripts/settings/equipment/weapon_templates/devices/scanner_equip.lua")
+    local template_file = "scripts/settings/equipment/weapon_templates/devices/scanner_equip.lua"
+    local template = M.read(M.source(template_file) .. template_file)
     local settings_text = assert(template:match("local scan_settings = (%b{})\n\nweapon_template.actions"))
     local scan_settings = assert(loadstring("return " .. settings_text))()
     M.eq(scan_settings.confirm_time, 1, "historical scanner stub matches pinned source")

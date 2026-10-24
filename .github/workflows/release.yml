@@ -56,6 +56,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # NoBrainer runs BetterBrainer's files from the BetterBrainer submodule.
+          submodules: true
 
       - name: Check tag, notes and metadata
         id: check
@@ -187,6 +189,11 @@ jobs:
                           fail(f"non-Lua file under scripts/ needs release-layout.json: {os.path.join(root, name)}")
               add(mod + ".mod", f"{mod}/{mod}.mod")
               add("scripts", f"{mod}/scripts")
+              # BetterBrainer submodule: its runtime scripts and its license.
+              if not os.path.isfile("BetterBrainer/scripts/mods/BetterBrainer/BetterBrainer.lua"):
+                  fail("BetterBrainer submodule is not checked out")
+              add("BetterBrainer/scripts", f"{mod}/BetterBrainer/scripts")
+              add("BetterBrainer/LICENSE", f"{mod}/BetterBrainer/LICENSE")
 
           entries = [entry for _, entry in files]
           if len({e.lower() for e in entries}) != len(entries):
