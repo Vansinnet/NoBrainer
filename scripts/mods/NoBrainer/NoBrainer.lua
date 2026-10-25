@@ -223,7 +223,12 @@ function ctx.reopen_ready(mg)
     local interactor = ScriptUnit.has_extension(unit, "interactor_system")
     if not interactor or not interactor._find_interaction_object or interactor:is_interacting() then return false end
     local chosen, _, focus = interactor:_find_interaction_object(unit)
-    return chosen == terminal or focus == terminal
+    if chosen == terminal or focus == terminal then return true end
+    -- An expedition terminal sits on a locked chest, which takes the focus but can never take the interact (its block
+    -- text fails can_interact, chest_extension.lua:21-33, interactee_extension.lua:137-177). Re-entry still waits
+    -- until the terminal itself is chosen.
+    local blocker = not chosen and focus and ScriptUnit.has_extension(focus, "interactee_system")
+    return blocker and not blocker:can_interact(unit) or false
 end
 
 -- Cancel, then interact again once allowed. The server runs both frames in order and its setup_game precedes the

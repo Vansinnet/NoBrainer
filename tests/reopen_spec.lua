@@ -64,6 +64,8 @@ local function machine(f, options)
             _find_interaction_object = function()
                 if options.look_away then return nil, 0, nil end
                 if allowed(C, f.t) then return f.terminal, 0, nil end
+                -- An expedition terminal on a chest: the chest is the focus while the minigame is active.
+                if options.chest then return nil, 0, f.chest end
                 return nil, 0, f.terminal -- focus only while the minigame is active
             end,
             can_interact = function(_, target, kind) return target == f.terminal and kind == "decoding" and allowed(C, f.t) end,
@@ -71,6 +73,11 @@ local function machine(f, options)
     end
     f.extensions[f.terminal] = { interactee_system = { interaction_type = function() return "decoding" end },
         decoder_device_system = {} }
+    if options.chest then
+        -- A locked chest's block text fails can_interact (chest_extension.lua:21-33, interactee_extension.lua:137-177).
+        f.chest = "chest"
+        f.extensions[f.chest] = { interactee_system = { can_interact = function() return options.chest == "open" end } }
+    end
     install()
     -- The interaction frame: the machine enters the minigame state, which initializes on the next frame.
     local function prepare(s)
@@ -236,6 +243,21 @@ test("Search not looking at the terminal: no reopen, native transition", functio
         assert(solve(f), "seed " .. seed .. ": stalled")
         eq(f.server._mistakes, 0)
         eq(f.reopen_log.reopens, 0)
+    end
+end)
+
+-- Seen in game 2026-10-25 (expedition): inside the terminal the focus was the locked chest it sits on, so no stage
+-- was skipped; outside, the interactor chose the terminal.
+test("Search on a locked chest (expedition): transitions skipped; an openable chest in focus blocks the reopen", function()
+    for seed = 1, 10 do
+        local f = open_search(seed, nil, 0.05, { chest = "locked" })
+        assert(solve(f), "seed " .. seed .. ": stalled")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        eq(f.reopen_log.reopens, 2, "seed " .. seed .. ": two transitions skipped")
+        local g = open_search(seed, nil, 0.05, { chest = "open" })
+        assert(solve(g), "seed " .. seed .. ": stalled")
+        eq(g.server._mistakes, 0)
+        eq(g.reopen_log.reopens, 0, "seed " .. seed .. ": the interact could reach the chest")
     end
 end)
 
