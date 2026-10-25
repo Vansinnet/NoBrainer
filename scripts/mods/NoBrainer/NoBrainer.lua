@@ -8,6 +8,7 @@ local fast_exit_sent
 -- A solver may close and reopen its terminal (DESIGN.md, Reopen controller).
 local REOPEN_GAP, REOPEN_TIMEOUT = 0.15, 1
 local reopen, reopen_off, session_t, resumed_t
+local lost -- a resumed session a server correction took away: { mg, module, t }, kept until it comes back
 local entering_frame, entering -- input frame last checked, and whether it enters a minigame
 
 function ctx.time()
@@ -137,14 +138,18 @@ local solvers = {
 }
 
 local function end_session(reason)
-    -- An unsolved session lost right after a resume was most likely rolled back: the server refused the entry. A server
-    -- correction swaps the state without on_exit (character_state_machine.lua:68-81); the player's own cancel, dodge or
-    -- look-away exits through on_exit ("session_end") and keeps reopening on.
+    -- An unsolved session lost right after a resume was rolled back by a server correction, which swaps the state
+    -- without on_exit (character_state_machine.lua:68-81); the player's own cancel, dodge or look-away exits through
+    -- on_exit ("session_end") and keeps reopening on. When the server took the entry a frame later, the resimulated
+    -- state enters the same minigame again (seen in game 2026-10-25): keep the solver for it. When the server refused
+    -- the entry, it never comes back, and mod.update switches reopening off.
     local t, mg = ctx.time(), ctx.active_minigame
     if resumed_t and reason == "ownership_changed" and t and t - resumed_t < REOPEN_TIMEOUT
         and not (mg and mg:is_completed()) then
-        reopen_off = true
-        mod:debug("Reopen: session ended %.3fs after the resume, reopening switched off", t - resumed_t)
+        mod:debug("Reopen: session lost %.3fs after the resume, waiting for it to come back", t - resumed_t)
+        lost = { mg = mg, module = active, t = t }
+        resumed_t, ctx.active_minigame, fast_exit_sent, local_state, observed_at, active = nil, nil, nil, nil, nil, nil
+        return
     end
     resumed_t = nil
     ctx.active_minigame = nil
@@ -173,9 +178,16 @@ local function reset(reason)
     ctx.input_handler, ctx.state_seen, ctx.timely_frame, ctx.moved_frame, ctx.moved_t = nil, nil, nil, nil, nil
     sampling_service, sampling_time, sampling_ephemeral = nil, nil, nil
     local_state, active, observed_at = nil, nil, nil
-    reopen, reopen_off, session_t, resumed_t = nil, nil, nil, nil
+    reopen, reopen_off, session_t, resumed_t, lost = nil, nil, nil, nil, nil
     ctx.session_frame, ctx.session_frame_timely, ctx.consuming, entering_frame = nil, nil, nil, nil
     for i = 1, #modules do modules[i].reset(reason) end
+end
+
+local function drop_lost(reason)
+    local gone = lost
+    lost, reopen_off = nil, true
+    mod:debug("Reopen: the lost session %s, reopening switched off until the next mission", reason)
+    gone.module.reset("session_end")
 end
 
 local function select_session(state, frame)
@@ -190,6 +202,13 @@ local function select_session(state, frame)
         -- Before our interact the same minigame is the old session replayed by a client correction
         -- (on_enter_server_corrected_state, player_character_state_minigame.lua:127-148), not the new entry.
         if reopen and reopen.mg == mg and not reopen.interacted then return end
+        if lost and lost.mg == mg and lost.module == solver then
+            -- The corrected session came back: same server session, so the solver carries on where it was.
+            mod:debug("Reopen: the lost session came back after %.3fs", (ctx.time() or lost.t) - lost.t)
+            ctx.active_minigame, active, observed_at, local_state, lost = mg, solver, nil, state, nil
+            return
+        end
+        if lost then drop_lost("was replaced by another session") end
         if active then end_session("session_changed") end
         local t = ctx.time()
         -- The server initializes the minigame in this same frame; its state reports whether it ran the frame's input.
@@ -467,6 +486,8 @@ mod.update = function(dt)
     if local_state and not ctx.session_valid() then end_session("ownership_changed") end
     local t = ctx.time()
     if reopen and t and t > reopen.t + REOPEN_TIMEOUT then abort_reopen("no new session in time") end
+    -- A refused entry never comes back.
+    if lost and t and t > lost.t + REOPEN_TIMEOUT then drop_lost("did not come back") end
     if not t then return end
     servo_skull.update(dt, t)
     if settings.enable_scan or settings.enable_auto_scan then scan.update(dt, t) end

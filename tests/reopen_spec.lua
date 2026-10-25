@@ -441,7 +441,7 @@ test("Symbols: the player's own cancel right after a resume keeps reopening on f
     assert(later >= 5, "too few rerolls after the manual entry: " .. later)
 end)
 
-test("Symbols: a resumed session lost without on_exit (server correction) still switches reopening off", function()
+test("Symbols: a resumed session lost without on_exit (server correction) that never comes back switches reopening off", function()
     local switched = 0
     for seed = 1, 20 do
         local f = open_symbols(seed, 4, 0.05)
@@ -457,10 +457,65 @@ test("Symbols: a resumed session lost without on_exit (server correction) still 
                 end
             end
         end)
-        for _, line in ipairs(f.debug_lines) do if line:find("session ended .* switched off") then switched = switched + 1 end end
+        for _, line in ipairs(f.debug_lines) do if line:find("did not come back, reopening switched off") then switched = switched + 1 end end
     end
     assert(switched >= 5, "too few corrections switched reopening off: " .. switched)
 end)
+
+-- Seen in game 2026-10-25 (expedition Search): 0.1 s after a resume a correction took the state away without on_exit
+-- (the server entered a frame later), then the resimulated state entered the same minigame again. Reopening switched
+-- off and Search resynchronized for 1.6 s. The corrected state initializes the terminal again
+-- (player_character_state_minigame.lua:127-148) and the solver carries on.
+local function correct_after_resume(g, n, state)
+    local C = g.sides.client
+    if state.done then return end
+    if state.away then
+        if n >= state.away then
+            local terminal = g.extensions[g.terminal]
+            local previous = terminal.minigame_system
+            terminal.minigame_system = C.mg._minigame_extension
+            C.mode = "minigame"
+            assert(C.state:_check_initialize_minigame_from_unit(), "corrected state initializes the terminal")
+            terminal.minigame_system = previous
+            state.done = true
+        end
+        return
+    end
+    for _, line in ipairs(g.debug_lines) do
+        if line:find("^Reopen: resumed") and C.mode == "minigame" then
+            -- The correction swaps the state machine to walking without on_exit (character_state_machine.lua:68-81).
+            -- The old session's stop receipt has already cleared the client owner (minigame_base.lua:172-181), so
+            -- ownership falls back to the state machine's current state.
+            C.mode, state.away = "walking", n + 3
+            C.mg._player_session_id = nil
+            return
+        end
+    end
+end
+
+for _, kind in ipairs({ "Search", "Symbols" }) do
+    test(kind .. ": a corrected session that comes back keeps reopening on and the solver carries on", function()
+        local corrected = 0
+        for seed = 1, 20 do
+            local f = kind == "Search" and open_search(seed, nil, 0.05) or open_symbols(seed, 4, 0.05)
+            local state = {}
+            local elapsed = solve(f, 6000, function(g, n) correct_after_resume(g, n, state) end)
+            assert(elapsed, "seed " .. seed .. ": stalled\n" .. table.concat(f.debug_lines, "\n"))
+            eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+            for _, line in ipairs(f.debug_lines) do
+                assert(not line:find("switched off"), "seed " .. seed .. ": " .. line)
+                assert(not line:find("^Search resync"), "seed " .. seed .. ": " .. line)
+            end
+            if state.done then
+                corrected = corrected + 1
+                local back = false
+                for _, line in ipairs(f.debug_lines) do if line:find("lost session came back") then back = true end end
+                assert(back, "seed " .. seed .. ": the corrected session was not taken back\n" .. table.concat(f.debug_lines, "\n"))
+            end
+        end
+        assert(corrected >= 10, "too few corrections: " .. corrected)
+    end)
+end
 
 -- A client counts MinigameSystem registrations from the level seed. The real init and on_add_extension run on
 -- stubbed ExtensionSystemBase parents; the client terminal is the third extension.

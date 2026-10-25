@@ -10,7 +10,7 @@ The solver suites are BetterBrainer's (`mods/active/BetterBrainer/tests/`), poin
 | `search_spec.lua` | Search pre-send, lag safety, reopen mid-solve | 2026-10-14: 21/21 |
 | `drill_spec.lua` | Drill aim planner, holds, lag safety | 2026-10-14: 36/36 |
 | `scan_marker_spec.lua` | Scan highlight release | 2026-10-14: 4/4 |
-| `reopen_spec.lua` | Search transition skip, Symbols reroll (average board and exact boards from a known seed), a replayed old session, the player's own cancel after a re-entry, a terminal on a locked chest, Frequency pipeline | 2026-10-25: 22/22 |
+| `reopen_spec.lua` | Search transition skip, Symbols reroll (average board and exact boards from a known seed), a replayed old session, the player's own cancel after a re-entry, a terminal on a locked chest, a corrected session that comes back or never does, Frequency pipeline | 2026-10-25: 24/24 |
 | `servo_skull_spec.lua` | Servo skull ordering through `ctx.settings` and `update(dt, t)` | 2026-10-14: 4/4 |
 
 Offline evidence, not in-game results.
