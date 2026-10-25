@@ -2,12 +2,12 @@
 
 Current release: **4.0.0**.
 
-A Darktide Mod Framework (DMF) mod that assists with Darktide's minigames. Since 4.0.0, NoBrainer is BetterBrainer's solvers plus NoBrainer's Skitarius servo-skull command.
+A Darktide Mod Framework (DMF) mod that assists with Darktide's minigames. NoBrainer is BetterBrainer's solvers plus NoBrainer's Skitarius servo-skull command, Symbols rerolls and Search transition skips. The last two are NoBrainer-only.
 
 ## Features
 
-- **Decode Symbols:** timed automatic presses and upcoming-solution highlights. Optionally rerolls slow boards: every opening deals a new board, so a board expected to take clearly longer than reopening and playing a fresh one makes the terminal close and reopen. `Reroll Slow Boards` sets the most rerolls per hack (0-8, default 0 = off; 8 is fastest on average).
-- **Decode Search:** matching-region highlights and an automatic solver. At speed 5 with `Skip Stage Transitions` (default off), the terminal closes and reopens right after each solved stage: the reopened session keeps the stage and starts at once with the cursor in the centre, instead of waiting for the 0.25-second transition.
+- **Decode Symbols:** timed automatic presses and upcoming-solution highlights. Rerolls slow boards: every opening deals a new board, so a board expected to take clearly longer than reopening and playing a fresh one makes the terminal close and reopen. When the terminal's seed is known (on the host, or rebuilt on a client from the level seed), the decision uses the exact upcoming boards instead of the average board. `Reroll Slow Boards` sets the most rerolls per hack (0-8, default 8; 0 = off).
+- **Decode Search:** matching-region highlights and an automatic solver. At speed 5 with `Skip Stage Transitions` (default on), the terminal closes and reopens right after each solved stage: the reopened session keeps the stage and starts at once with the cursor in the centre, instead of waiting for the 0.25-second transition.
 - **Tree Drill:** correct-node highlights; movement and submission planned with the game's own node-selection rule.
 - **Frequency:** directional arrows and direct submission of the target. At speed 5 it does not steer. When the board seed predicts targets 2 and 3 unambiguously and the server confirms it ran the session's first frame on its own input, all three tests are sent at once.
 - **Balance:** latency-aware predictive steering.
@@ -16,13 +16,13 @@ A Darktide Mod Framework (DMF) mod that assists with Darktide's minigames. Since
 
 Every solver decides once per input frame sent to the server. Against a remote server, Search and Drill press only after the server has shown it ran later, timely input, so lag costs time but not a wrong press.
 
-Reopening (Symbols rerolls and Search transition skips) only acts on a decoder terminal the interactor already sees. It switches itself off for the rest of the mission after a refused or missing re-entry. Teammates see the auspex close and reopen.
+Reopening (Symbols rerolls and Search transition skips) only acts on a decoder terminal the interactor already sees. It switches itself off for the rest of the mission after a refused or missing re-entry; cancelling a hack yourself does not. Teammates see the auspex close and reopen.
 
 The mod offers English, Simplified Chinese, Traditional Chinese and Russian localization. All settings are in the DMF options menu.
 
 ### Upgrading from 3.x
 
-- The old Smart Seed Reroll setting is gone; use `Reroll Slow Boards`.
+- The old Smart Seed Reroll setting is gone; `Reroll Slow Boards` uses the seed itself when it is known.
 - Every other setting keeps its id and value; speeds saved by NoBrainer 3.1 and earlier on the old 1-10 scale are still migrated once.
 - The Frequency, Scan and Balance solvers are now the BetterBrainer versions.
 
@@ -53,6 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "tools\validate.ps1" -Path "
 ## Credits
 
 - The solvers are BetterBrainer's, by the same author.
+- The exact-board Symbols reroll (dealing a terminal's upcoming boards from its seed) is based on Robert's ([Evasion3356](https://github.com/Evasion3356)) Smart Seed Reroll.
 - Simplified Chinese translation by EasyRain233.
 - Traditional Chinese translation credits are retained in the localization source.
 

@@ -38,6 +38,40 @@ local function board_cost(targets, first, last, t0, start, dt, period, spacing, 
     return at - t0
 end
 
+local MAX_DEALS = 256 -- boards searched from a terminal's first seed for the one a client received
+local next_random = rawget(math, "next_random")
+
+-- One board as setup_game deals it from `seed`, and the seed it leaves (minigame_decode_symbols.lua:103-140,
+-- table.lua:781-797). Code by Robert (Evasion3356), NoBrainer pull request 1.
+local function deal(seed, total, stages, items)
+    local symbols, targets = {}, {}
+    for i = 1, total do symbols[i] = i end
+    for i = total, 2, -1 do
+        local swap
+        seed, swap = next_random(seed, i)
+        symbols[swap], symbols[i] = symbols[i], symbols[swap]
+    end
+    for stage = 1, stages do
+        local target
+        if stage == 1 then
+            seed, target = next_random(seed, 1, items)
+        else
+            seed, target = next_random(seed, 1, items - 1)
+            if targets[stage - 1] <= target then target = target + 1 end
+        end
+        targets[stage] = target
+    end
+    return symbols, targets, seed
+end
+
+local function same(a, b)
+    if type(b) ~= "table" or #a ~= #b then return false end
+    for i = 1, #a do
+        if a[i] ~= b[i] then return false end
+    end
+    return true
+end
+
 return function(ctx)
     local mod = ctx.mod
     local module = {}
@@ -57,6 +91,8 @@ return function(ctx)
     local stopped_clocks = setmetatable({}, { __mode = "k" })
     local clock_receipts = setmetatable({}, { __mode = "k" })
     local board_receipts = setmetatable({}, { __mode = "k" })
+    local next_seeds = setmetatable({}, { __mode = "k" }) -- MinigameSystem -> seed its next extension gets
+    local initial_seeds = setmetatable({}, { __mode = "k" }) -- MinigameExtension -> its first seed
     local holds = { action_one_hold = true, interact_hold = true, interact_primary_hold = true, jump_held = true }
 
     local function clear_press()
@@ -145,6 +181,21 @@ return function(ctx)
         return fresh
     end
 
+    -- The seed the next reroll deals from: the server's own, or on a client the one after the received board, found
+    -- among the boards this terminal's first seed deals. Nil when unknown.
+    local function board_seed(mg)
+        if not next_random then return nil end
+        if mg._is_server then return type(mg._seed) == "number" and mg._seed or nil end
+        local seed = mg._minigame_extension and initial_seeds[mg._minigame_extension]
+        if not seed then return nil end
+        for _ = 1, MAX_DEALS do
+            local symbols, targets
+            symbols, targets, seed = deal(seed, mg._decode_symbols_total_items, mg._stage_amount,
+                mg._decode_symbols_items_per_stage)
+            if same(targets, mg._decode_targets) and same(symbols, mg._symbols) then return seed end
+        end
+    end
+
     -- From a fresh board's first possible press until its first press: reroll when the board is expected to take
     -- clearly longer than reopening and playing a fresh board with one reroll fewer. A reroll the terminal cannot
     -- take right now (not in view) is tried again on the next frame.
@@ -179,18 +230,35 @@ return function(ctx)
         local ack = (mg._is_server and 0 or rtt) + 2 * dt
         local cost = board_cost(mg._decode_targets, 1, mg._stage_amount, t, start, dt, period, spacing, radius, ack)
         local delay = delay_estimate or REROLL_BASE + (mg._is_server and 0 or rtt)
-        local values = fresh_values(mg, decision_phase, dt, math.floor(ack * 100 + 0.5) / 100,
-            math.floor(delay * 100 + 0.5) / 100)
-        local value = delay + values[math.min(limit - rerolls - 1, MAX_REROLLS)]
+        local left, seed, value = limit - rerolls, board_seed(mg), nil
+        local source = seed and "seed" or "average"
+        if seed then
+            -- The next boards are known: value them backwards, each kept or rerolled by this same rule.
+            local boards = {}
+            for i = 1, left do
+                local _, targets, after = deal(seed, mg._decode_symbols_total_items, mg._stage_amount, items)
+                boards[i], seed = targets, after
+            end
+            for i = left, 1, -1 do
+                local board = board_cost(boards[i], 1, mg._stage_amount, decision_phase, 0, dt, period, spacing, radius, ack)
+                value = value and board > delay + value + REROLL_MARGIN and delay + value or board
+            end
+            value = delay + value
+        else
+            local values = fresh_values(mg, decision_phase, dt, math.floor(ack * 100 + 0.5) / 100,
+                math.floor(delay * 100 + 0.5) / 100)
+            value = delay + values[math.min(left - 1, MAX_REROLLS)]
+        end
         if cost <= value + REROLL_MARGIN then
             decided = start
-            mod:debug("Symbols board kept: %.2fs, reroll %.2fs", cost, value)
+            mod:debug("Symbols board kept (%s): %.2fs, reroll %.2fs", source, cost, value)
             return
         end
         if not ctx.request_reopen(mg) then return end
         decided, rerolls, reroll_t, rolling = start, rerolls + 1, t, true
         clear_press()
-        mod:debug("Symbols reroll %d of %d: board %.2fs, reroll %.2fs (delay %.2fs)", rerolls, limit, cost, value, delay)
+        mod:debug("Symbols reroll %d of %d (%s): board %.2fs, reroll %.2fs (delay %.2fs)", rerolls, limit, source, cost,
+            value, delay)
     end
 
     function module.start(mg, player)
@@ -400,6 +468,20 @@ return function(ctx)
             previous_start = nil
             candidate_since = nil
         end
+    end)
+
+    -- The server hands extension n the level seed + n (minigame_system.lua:30-71) and syncs no seed to clients. A client
+    -- registers the same level units in the same order, so it counts from the same level seed.
+    mod:hook_safe("MinigameSystem", "init", function(self, context, system_init_data)
+        local seed = system_init_data and system_init_data.level_seed
+        next_seeds[self] = type(seed) == "number" and seed or nil
+    end)
+    mod:hook_safe("MinigameSystem", "on_add_extension", function(self, world, unit)
+        local seed = next_seeds[self]
+        if not seed then return end
+        local extension = self._unit_to_extension_map[unit]
+        if extension then initial_seeds[extension] = seed end
+        next_seeds[self] = seed + 1
     end)
 
     mod:hook_require("scripts/ui/views/scanner_display_view/minigame_decode_symbols_view", function(View)

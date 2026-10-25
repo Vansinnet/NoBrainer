@@ -58,13 +58,13 @@ return {
             group("decode_symbols_group", {
                 checkbox("enable_decode_highlight", true),
                 checkbox("enable_decode_auto", true),
-                numeric("decode_reroll_limit", 0, 0, 8),
+                numeric("decode_reroll_limit", 8, 0, 8),
             }),
             group("matching_group", {
                 checkbox("enable_matching", true),
                 checkbox("enable_expedition_auto_solve", true),
                 numeric("expedition_solve_speed", 1, 1, 5),
-                checkbox("enable_expedition_reopen", false),
+                checkbox("enable_expedition_reopen", true),
             }),
             group("scan_group", {
                 checkbox("enable_scan", true),

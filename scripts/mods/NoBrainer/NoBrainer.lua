@@ -137,9 +137,12 @@ local solvers = {
 }
 
 local function end_session(reason)
-    -- An unsolved session that ends right after a resume was most likely rolled back: the server refused the entry.
+    -- An unsolved session lost right after a resume was most likely rolled back: the server refused the entry. A server
+    -- correction swaps the state without on_exit (character_state_machine.lua:68-81); the player's own cancel, dodge or
+    -- look-away exits through on_exit ("session_end") and keeps reopening on.
     local t, mg = ctx.time(), ctx.active_minigame
-    if resumed_t and t and t - resumed_t < REOPEN_TIMEOUT and not (mg and mg:is_completed()) then
+    if resumed_t and reason == "ownership_changed" and t and t - resumed_t < REOPEN_TIMEOUT
+        and not (mg and mg:is_completed()) then
         reopen_off = true
         mod:debug("Reopen: session ended %.3fs after the resume, reopening switched off", t - resumed_t)
     end
@@ -184,6 +187,9 @@ local function select_session(state, frame)
         return
     end
     if ctx.active_minigame ~= mg then
+        -- Before our interact the same minigame is the old session replayed by a client correction
+        -- (on_enter_server_corrected_state, player_character_state_minigame.lua:127-148), not the new entry.
+        if reopen and reopen.mg == mg and not reopen.interacted then return end
         if active then end_session("session_changed") end
         local t = ctx.time()
         -- The server initializes the minigame in this same frame; its state reports whether it ran the frame's input.
@@ -262,7 +268,7 @@ local function reopen_input(action, original, t)
         if not sampling_ephemeral then return original end
         if pending.phase == "interact_sent" and t >= pending.interact_t + 0.1 then pending.phase = "exited" end
         if pending.phase == "exited" and can_reinteract(pending, t) then
-            pending.phase, pending.interact_t = "interact_sent", t
+            pending.phase, pending.interact_t, pending.interacted = "interact_sent", t, true
             mod:debug("Reopen: interact at %.3f", t)
             return true
         end

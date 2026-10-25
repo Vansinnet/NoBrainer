@@ -133,6 +133,16 @@ local function machine(f, options)
             return result
         end
     end
+    -- The player cancels for one frame (player_character_state_minigame.lua:173-174,307-309).
+    function f:press_cancel()
+        self.raw.action_two_pressed = true
+        local sample = self.sample
+        self.sample = function(g, ...)
+            local result = sample(g, ...)
+            g.raw.action_two_pressed, g.sample = false, sample
+            return result
+        end
+    end
     -- The player enters by hand (after a refused or abandoned reopen, or for another session).
     function f:manual_entry()
         for _, s in ipairs(sides) do
@@ -341,6 +351,139 @@ test("Symbols reroll refused: one attempt, the player re-enters, no mistake", fu
     end
 end)
 
+-- A client correction resimulates frames: after our cancel the corrected minigame state initializes the same terminal
+-- again (player_character_state_minigame.lua:127-148), consumes a frame and exits again, before our interact. Seen in game 2026-10-25: "resumed 0.020s after the request" with no interact, then
+-- "session ended 0.000s after the resume, reopening switched off".
+test("Symbols reroll with the old session replayed before the interact: not a resume, reopening stays on", function()
+    local rerolled = 0
+    for seed = 1, 30 do
+        local f = open_symbols(seed, 4, 0.05)
+        local replayed = false
+        local elapsed = solve(f, 6000, function(g, n)
+            local C = g.sides.client
+            local interacted = false
+            for _, line in ipairs(g.debug_lines) do if line:find("^Reopen: interact") then interacted = true end end
+            if not replayed and not interacted and g.reopen_log.requests > 0 and C.mode == "walking" then
+                replayed = true
+                local state = C.state
+                state._minigame_character_state_component = {
+                    interface_is_level_unit = true, interface_level_unit_id = 1, interface_game_object_id = -1 }
+                local terminal = g.extensions[g.terminal]
+                local previous = terminal.minigame_system
+                terminal.minigame_system = C.mg._minigame_extension
+                assert(state:_check_initialize_minigame_from_unit(), "corrected state initializes the terminal")
+                terminal.minigame_system = previous
+                eq(state._minigame, C.mg, "the client's own minigame")
+                g:consume(state, n, g.t)
+                state:on_exit(C.player.player_unit, g.t, "walking")
+            end
+        end)
+        assert(elapsed, "seed " .. seed .. ": stalled\n" .. table.concat(f.debug_lines, "\n"))
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        local interacted = false
+        for _, line in ipairs(f.debug_lines) do
+            assert(not line:find("switched off"), "seed " .. seed .. ": " .. line)
+            if line:find("^Reopen: requested") then interacted = false end
+            if line:find("^Reopen: interact") then interacted = true end
+            assert(not line:find("^Reopen: resumed") or interacted, "seed " .. seed .. ": resumed without an interact")
+        end
+        if replayed then rerolled = rerolled + 1; assert(f.reopen_log.reopens >= 1, "seed " .. seed .. ": no reopen") end
+    end
+    assert(rerolled >= 10, "too few rerolls to replay: " .. rerolled)
+end)
+
+-- Seen in game 2026-10-25: the player cancelled 0.69 s after a resume, reopening switched off, and later manual
+-- entries got no rerolls. Only a session lost without on_exit (a server correction) counts as a refused entry.
+test("Symbols: the player's own cancel right after a resume keeps reopening on for the next entry", function()
+    local later = 0
+    for seed = 1, 30 do
+        local f = open_symbols(seed, 4, 0.05)
+        local cancel_at, entered, requests_at_entry = nil, false, nil
+        solve(f, 6000, function(g)
+            local C = g.sides.client
+            if not cancel_at then
+                for _, line in ipairs(g.debug_lines) do
+                    if line:find("^Reopen: resumed") then cancel_at = g.t + 0.3 end
+                end
+            elseif g.t >= cancel_at and g.t < cancel_at + STEP and C.mode == "minigame" then
+                g:press_cancel()
+            elseif not entered and C.mode == "walking" and g.t > cancel_at + 0.5 then
+                entered, requests_at_entry = true, g.reopen_log.requests
+                g:manual_entry()
+            end
+        end)
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        for _, line in ipairs(f.debug_lines) do assert(not line:find("switched off"), "seed " .. seed .. ": " .. line) end
+        if requests_at_entry and f.reopen_log.requests > requests_at_entry then later = later + 1 end
+    end
+    assert(later >= 5, "too few rerolls after the manual entry: " .. later)
+end)
+
+test("Symbols: a resumed session lost without on_exit (server correction) still switches reopening off", function()
+    local switched = 0
+    for seed = 1, 20 do
+        local f = open_symbols(seed, 4, 0.05)
+        local lost = false
+        solve(f, 400, function(g)
+            local C = g.sides.client
+            if lost then return end
+            for _, line in ipairs(g.debug_lines) do
+                if line:find("^Reopen: resumed") and C.mode == "minigame" then
+                    -- The correction swaps the state machine to walking without on_exit (character_state_machine.lua:68-81).
+                    lost, C.mode = true, "walking"
+                    break
+                end
+            end
+        end)
+        for _, line in ipairs(f.debug_lines) do if line:find("session ended .* switched off") then switched = switched + 1 end end
+    end
+    assert(switched >= 5, "too few corrections switched reopening off: " .. switched)
+end)
+
+-- A client counts MinigameSystem registrations from the level seed. The real init and on_add_extension run on
+-- stubbed ExtensionSystemBase parents; the client terminal is the third extension.
+local function register_client_seed(f, level_seed)
+    local System, Base = f.env.CLASS.MinigameSystem, f.env.CLASS.ExtensionSystemBase
+    local init, add = Base.init, Base.on_add_extension
+    Base.init = function(self) self._is_server, self._unit_to_extension_map = false, {} end
+    -- The map holds the client terminal's extension; the returned stand-in takes MinigameSystem's on_add_extension call.
+    Base.on_add_extension = function(self, _, unit)
+        self._unit_to_extension_map[unit] = unit == "terminal" and f.client._minigame_extension or {}
+        return { on_add_extension = function() end }
+    end
+    local system = setmetatable({}, { __index = System })
+    System.init(system, {}, { level_seed = level_seed, mission = {} })
+    for _, unit in ipairs({ "a", "b", "terminal" }) do system:on_add_extension(nil, unit, "MinigameExtension", {}) end
+    Base.init, Base.on_add_extension = init, add
+end
+
+local function seed_lines(f, source)
+    local n = 0
+    for _, line in ipairs(f.debug_lines) do if line:find("^Symbols .*%(" .. source .. "%)") then n = n + 1 end end
+    return n
+end
+
+test("Symbols reroll from a rebuilt client seed: exact boards, zero mistakes, faster than the average board", function()
+    local exact, average, decided, decided_average = {}, {}, 0, 0
+    for seed = 1, 60 do
+        local f = open_symbols(seed, 4, 0.03)
+        f.client._minigame_extension = f.client._minigame_extension or {}
+        register_client_seed(f, 5000 + seed * 13 - 2)
+        exact[#exact + 1] = assert(solve(f, 6000), "seed " .. seed .. ": stalled")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        assert(f.reopen_log.reopens <= 4, "seed " .. seed .. ": more rerolls than the limit")
+        eq(seed_lines(f, "average"), 0, "seed " .. seed .. ": seed not rebuilt")
+        if seed_lines(f, "seed") > 0 then decided = decided + 1 end
+        local g = open_symbols(seed, 4, 0.03)
+        average[#average + 1] = assert(solve(g, 6000), "seed " .. seed .. ": stalled without a seed")
+        eq(seed_lines(g, "seed"), 0, "seed " .. seed .. ": no seed, average board")
+        if seed_lines(g, "average") > 0 then decided_average = decided_average + 1 end
+    end
+    print(string.format("  mean solve %.3fs from the rebuilt seed (%d of 60 decided), %.3fs from the average board (%d)",
+        mean(exact), decided, mean(average), decided_average))
+    assert(decided >= decided_average, "every hack the average board decides, the rebuilt seed decides")
+    if not baseline then assert(mean(exact) < mean(average), "the exact boards are faster") end
+end)
 
 local FREQ5 = { frequency_solve_speed = 5, enable_scan = false, enable_auto_scan = false }
 
