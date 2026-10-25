@@ -74,6 +74,7 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 ## Runtime status
 - 2026-10-14 (user, BetterBrainer build): Symbols reroll and Search transition skip reported working in game.
 - 2026-10-25, BetterBrainer builds with these features (dt-cli logs, client of a mission server, limit 8): the client rebuilt the seed (`(seed)` on every decision). Three 60 s checks found two reopen bugs, both fixed (918e161, d1883d0). The last check: 15 rerolls and 6 kept boards, every resume after its own interact, no switch-off, rerolls again after manual cancels and re-entries.
+- 2026-10-25, c16af1e, expedition Search terminal on a locked chest (dt-cli log, client of a mission server, speed 5): both transitions skipped; each reopen was followed by a correction (session lost 0.058-0.065 s after the resume) and the same session came back within 0.021 s; no resync, no switch-off, zero mistakes; the hack took about 0.8 s from the session start to the last press (1.1 s without skips, 3 s with the earlier switch-off).
 - This NoBrainer build (defaults on, ported 2026-10-25), the servo skull module in its new form and the Frequency pipeline are not yet tested in game.
 - Smallest test, as a client in a regular mission with default settings:
   1. Hack a Symbols terminal: slow boards are rerolled (the auspex closes and reopens), up to 8 times.
