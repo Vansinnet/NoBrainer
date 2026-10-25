@@ -82,6 +82,6 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
   3. As Skitarius with the hacking servo skull, walk within 25 m of a hackable terminal: the skull should be ordered to it.
 
 ## Open items
-- 2026-10-14: `NoBrainerDebug` read the old solvers through `mod._frame_snapshot()`, which no longer exists. The companion needs updating before it can observe 4.x; it never ships.
+- 2026-10-25: resolved. `NoBrainerDebug` (it read the 3.2 solvers through `mod._frame_snapshot()`) is retired to `mods/archived/`; diagnose with the DMF debug log, dt-cli probes and Census (`darktide-nobrainer-runtime-diagnostics`). NoBrainer keeps no debug-only APIs.
 - 2026-10-25: exact Symbols lookahead seen as a client in one session; a hot join and more missions are unobserved.
 - 2026-10-25: NoBrainer pull request 1 is superseded by this port; it is still open and unanswered.
