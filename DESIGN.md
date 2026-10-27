@@ -75,11 +75,12 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 - 2026-10-14 (user, BetterBrainer build): Symbols reroll and Search transition skip reported working in game.
 - 2026-10-25, BetterBrainer builds with these features (dt-cli logs, client of a mission server, limit 8): the client rebuilt the seed (`(seed)` on every decision). Three 60 s checks found two reopen bugs, both fixed (918e161, d1883d0). The last check: 15 rerolls and 6 kept boards, every resume after its own interact, no switch-off, rerolls again after manual cancels and re-entries.
 - 2026-10-25, c16af1e, expedition Search terminal on a locked chest (dt-cli log, client of a mission server, speed 5): both transitions skipped; each reopen was followed by a correction (session lost 0.058-0.065 s after the resume) and the same session came back within 0.021 s; no resync, no switch-off, zero mistakes; the hack took about 0.8 s from the session start to the last press (1.1 s without skips, 3 s with the earlier switch-off).
-- This NoBrainer build (defaults on, ported 2026-10-25), the servo skull module in its new form and the Frequency pipeline are not yet tested in game.
-- Smallest test, as a client in a regular mission with default settings:
-  1. Hack a Symbols terminal: slow boards are rerolled (the auspex closes and reopens), up to 8 times.
-  2. At expedition speed 5, solve a Search terminal: the auspex closes and reopens after each stage below the last.
-  3. As Skitarius with the hacking servo skull, walk within 25 m of a hackable terminal: the skull should be ordered to it.
+- 2026-10-27, NoBrainer 4.1.1 (3a8d14b, deployed copy matched by Auspex; Auspex debug log, client of a mission server, limit 8, expedition speed 5); the user saw every hack solve:
+  - Symbols, km_station: 5 hack starts, 21 rerolls and 5 kept boards, all `(seed)`; every resume after its own interact (0.075-0.178 s after the request); no session lost, no switch-off, no Lua errors; a manual cancel and re-entry worked.
+  - Search, exp_wastes (Skitarius): 2 terminals, both transitions skipped on each (4 reopens, resumed 0.050-0.058 s after the request); every reopen was followed by a correction (session lost 0.050-0.067 s after the resume, back within 0.025 s); no resync, no switch-off.
+  - `auspex hooks --mod NoBrainer`: 39 targets hooked; the 5 view targets are lazy (hooked when the first terminal opened); the 4 `method_missing` scan targets are Auspex attributing `action_scan_confirm` and `mission_objective_zone_scannable_extension` hooks to `auspex_scanning_effects`.
+- Not yet tested in game: the servo skull module in its new form (skipped by the user on 2026-10-27) and the Frequency pipeline.
+- Smallest remaining test, as a client in a regular mission: as Skitarius with the hacking servo skull and auto-hack on, walk within 25 m of a hackable terminal: the skull should be ordered to it; solve a Frequency terminal at speed 5.
 
 ## Open items
 - 2026-10-25: resolved. `NoBrainerDebug` (it read the 3.2 solvers through `mod._frame_snapshot()`) is retired to `mods/archived/`; diagnose with the DMF debug log, dt-cli probes and Census (`darktide-nobrainer-runtime-diagnostics`). NoBrainer keeps no debug-only APIs.
