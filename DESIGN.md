@@ -5,7 +5,8 @@
 NoBrainer is BetterBrainer plus the Skitarius servo-skull command, Symbols reroll (with exact lookahead from the terminal's seed) and Search transition skip (user decision, 2026-10-25). BetterBrainer itself is 1.0.4 plus the Frequency pipeline; the shared solver design is in `mods/active/BetterBrainer/DESIGN.md`. This file covers what differs: the reopen controller and the two features that use it.
 
 - `NoBrainer.lua`: BetterBrainer's core (`BetterBrainer.lua`) plus the reopen controller. It also has the ModID, path and data-file names changed, a one-time migration of 3.1-era speed settings (`_speed_schema_v2`), and the servo skull module, which `mod.update` calls every frame while the mod is enabled.
-- `drill.lua`, `frequency.lua`, `balance.lua`, `scan.lua`: identical copies of BetterBrainer's modules. Keep them identical: change BetterBrainer first, then copy.
+- `drill.lua`, `frequency.lua`, `scan.lua`: identical copies of BetterBrainer's modules. Keep them identical: change BetterBrainer first, then copy.
+- `balance.lua`: BetterBrainer's module with the centre-hold controller (below), built here first by user decision. Copy it to BetterBrainer once it passes in game.
 - `symbols.lua`, `search.lua`: BetterBrainer's modules plus Symbols reroll and Search transition skip. BetterBrainer's versions are the 1.0.4 files, so a change to those solvers is made in both mods.
 - `servo_skull.lua`: NoBrainer's servo-skull command as a core module (`return function(ctx) ... end` with `update(dt, t)`, `reset`, `settings_changed`). It reads `ctx.settings`; its logic is unchanged from 3.2.0.
 - `NoBrainer_data.lua`, `NoBrainer_localization.lua`: BetterBrainer's options and strings plus `decode_reroll_limit`, `enable_expedition_reopen` and the servo skull group, with NoBrainer's name and description.
@@ -21,6 +22,13 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 - 2026-10-25 (user: "jag vill återgå i betterbrainer till 1.0.4 ... de är för starka"): Symbols reroll and Search transition skip are NoBrainer-only. BetterBrainer is back to 1.0.4 plus the Frequency pipeline.
 - 2026-10-25 (user): both on by default in NoBrainer: `decode_reroll_limit` 8 (range 0-8) and `enable_expedition_reopen` on (it acts at expedition speed 5 only).
 - Every reopen feature has a kill switch for the rest of the mission after any failure, like the Search pre-send and Drill holding. Failures cost time, never a wrong press.
+- 2026-10-28 (user: "bygg den i nobrainer först, och fungerar den bra lägger vi in den i betterbrainer också"): Balance holds the point as close to the centre as the server allows. Built in NoBrainer first; BetterBrainer gets the same `balance.lua` after an in-game pass.
+
+## Balance centre hold (`balance.lua`)
+- Exactly centred is impossible. The server owns the position. Every 2.5 s while progressing it adds a 0.6 velocity kick in one of eight integer-radian directions, from its own `math.random(0, math.pi * 2)` (LuaJIT floors the bounds), and input can only accelerate it at 4.2 per axis (`minigame_balance.lua:89-187`, `minigame_settings.lua:8-13`). Online the solver sees a kick half a round trip late, and its reply runs half a round trip plus a tick later. The outward push (1.08 at the centre) points along the position, so the centre is a discontinuity a lagged hold wobbles around.
+- The 1.0.4 controller scaled a critically damped command by 0.35, so it also only cancelled 35 % of the push. It settled about 0.13 radii off centre and swung out to about 0.3.
+- Now: the push is cancelled in full, and the steering follows a velocity target toward the centre (rate 3 per second near it, a 3/s² braking curve further out, gain 8). A saturated input keeps its direction. Samples blend 0.8 of the position residual and 0.5 of the velocity residual (was 0.65 and 0.20), so a kick is learned within a tick or two. The edge-braking fallback is unchanged.
+- Offline (`tests/balance_spec.lua`): RMS distance 0.023 radii as host, 0.037 at 30 ms, 0.053 at 80 ms and 0.080 at 150 ms (1.0.4: 0.18-0.21). Worst kick peaks 0.07, 0.13, 0.18 and 0.25 (1.0.4: 0.29-0.35). The hold without kicks is 0.002 as host and 0.02-0.03 online. No case leaves the circle, including input running two ticks later than assumed and 0.004-step position samples. The quantization and timing of the real link are unmeasured.
 
 ## Reopen controller (`NoBrainer.lua`)
 - Why: a decoder terminal's `decoding` interaction takes 0 s (`interaction_templates.lua:36-43`) and is allowed again 0.1 s after the last success while the minigame is inactive (`decoder_device_extension.lua:292-305`). Every entry runs `setup_game` on the server before that frame's input (`player_character_state_minigame.lua:138-148,376-402`).
@@ -66,6 +74,7 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 | Search setup keeps stage | `scripts/extension_systems/minigame/minigames/minigame_decode_search.lua:68-86,150-166,203-257` |
 | Symbols setup builds a board | `minigame_decode_symbols.lua:93-144,183-211` |
 | RNG | `math.next_random`, `types/darktide/core.lua` (LCG identified in game, `types/SOURCES.md`) |
+| Balance server physics | `scripts/extension_systems/minigame/minigames/minigame_balance.lua:89-187`; `scripts/settings/minigame/minigame_settings.lua:8-13`; input reaches the server as four `float_input` directions (`input_handler_settings.lua:68-79`, `human_unit_input.lua:21-29`) |
 | Minigame seeds | `scripts/extension_systems/minigame/minigame_system.lua:30-71`; `scripts/foundation/managers/extension/extension_system_base.lua:94-114`; `gameplay_init_step_extensions.lua:133-136`; `scripts/game_states/game/state_gameplay.lua:29`; `minigame_base.lua:7-32` |
 
 ## Tests
@@ -79,7 +88,7 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
   - Symbols, km_station: 5 hack starts, 21 rerolls and 5 kept boards, all `(seed)`; every resume after its own interact (0.075-0.178 s after the request); no session lost, no switch-off, no Lua errors; a manual cancel and re-entry worked.
   - Search, exp_wastes (Skitarius): 2 terminals, both transitions skipped on each (4 reopens, resumed 0.050-0.058 s after the request); every reopen was followed by a correction (session lost 0.050-0.067 s after the resume, back within 0.025 s); no resync, no switch-off.
   - `auspex hooks --mod NoBrainer`: 39 targets hooked; the 5 view targets are lazy (hooked when the first terminal opened); the 4 `method_missing` scan targets are Auspex attributing `action_scan_confirm` and `mission_objective_zone_scannable_extension` hooks to `auspex_scanning_effects`.
-- Not yet tested in game: the servo skull module in its new form (skipped by the user on 2026-10-27) and the Frequency pipeline.
+- Not yet tested in game: the Balance centre hold (2026-10-28), the servo skull module in its new form (skipped by the user on 2026-10-27) and the Frequency pipeline.
 - Smallest remaining test, as a client in a regular mission: as Skitarius with the hacking servo skull and auto-hack on, walk within 25 m of a hackable terminal: the skull should be ordered to it; solve a Frequency terminal at speed 5.
 
 ## Open items

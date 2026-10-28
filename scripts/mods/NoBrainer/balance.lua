@@ -6,6 +6,10 @@ local PREDICTION_HORIZON = MAX_RTT + SAMPLE_TIMEOUT + 0.1
 local HISTORY_SIZE = 256
 local RECOVERY_TIMEOUT = 1.2
 local DEFAULT_TICK = 1 / 52
+-- Sample blend: position and velocity share of the residual (a disrupt kick is a velocity step).
+local BLEND_POSITION, BLEND_VELOCITY = 0.8, 0.5
+-- Steering: a velocity target toward the centre, linear near it and on a braking curve further out.
+local CENTER_RATE, BRAKE, VELOCITY_GAIN = 3, 3, 8
 local clamp = math.clamp
 local sqrt = math.sqrt
 local abs = math.abs
@@ -146,9 +150,9 @@ return function(ctx)
         else
             local predicted_x, predicted_y, predicted_vx, predicted_vy = advance(x, y, vx, vy, estimate_at, measurement_t)
             local dx, dy = px - predicted_x, py - predicted_y
-            x, y = predicted_x + dx * 0.65, predicted_y + dy * 0.65
-            vx = clamp(predicted_vx + dx * 0.20 / dt, -max_speed, max_speed)
-            vy = clamp(predicted_vy + dy * 0.20 / dt, -max_speed, max_speed)
+            x, y = predicted_x + dx * BLEND_POSITION, predicted_y + dy * BLEND_POSITION
+            vx = clamp(predicted_vx + dx * BLEND_VELOCITY / dt, -max_speed, max_speed)
+            vy = clamp(predicted_vy + dy * BLEND_VELOCITY / dt, -max_speed, max_speed)
         end
         sample_at, estimate_at = t, measurement_t
         correction_at = nil
@@ -259,8 +263,10 @@ return function(ctx)
             if count > 0 then apply_at = math.max(apply_at, times[head]) end
             local px, py, sx, sy = advance(x, y, vx, vy, estimate_at, apply_at)
             local gx, gy, distance = outward(px, py)
-            local cx = (gx + 12.25 * px + 7 * sx) / move_ratio
-            local cy = (gy + 12.25 * py + 7 * sy) / move_ratio
+            -- Cancel the outward push fully; the centre itself is its discontinuity, so hold costs a small wobble.
+            local rate = distance > 0.000001 and math.min(CENTER_RATE, sqrt(2 * BRAKE / distance)) or CENTER_RATE
+            local cx = (gx + VELOCITY_GAIN * (px * rate + sx)) / move_ratio
+            local cy = (gy + VELOCITY_GAIN * (py * rate + sy)) / move_ratio
             local radial_speed = distance > 0.000001 and (px * sx + py * sy) / distance or 0
             local worst_speed = math.max(radial_speed, 0) + MinigameSettings.balance_disrupt_power
             local braking_distance = worst_speed * (rtt + tick) + worst_speed * worst_speed / (2 * (move_ratio - push_ratio))
@@ -268,7 +274,9 @@ return function(ctx)
                 cx = abs(px) > 0.000001 and (px > 0 and 1 or -1) or 0
                 cy = abs(py) > 0.000001 and (py > 0 and 1 or -1) or 0
             else
-                cx, cy = cx * 0.35, cy * 0.35
+                -- Keep the direction when the input saturates.
+                local scale = math.max(abs(cx), abs(cy), 1)
+                cx, cy = cx / scale, cy / scale
             end
             correction_x, correction_y = clamp(cx, -1, 1), clamp(cy, -1, 1)
             correction_at = t
