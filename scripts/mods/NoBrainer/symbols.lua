@@ -91,8 +91,6 @@ return function(ctx)
     local stopped_clocks = setmetatable({}, { __mode = "k" })
     local clock_receipts = setmetatable({}, { __mode = "k" })
     local board_receipts = setmetatable({}, { __mode = "k" })
-    local next_seeds = setmetatable({}, { __mode = "k" }) -- MinigameSystem -> seed its next extension gets
-    local initial_seeds = setmetatable({}, { __mode = "k" }) -- MinigameExtension -> its first seed
     local holds = { action_one_hold = true, interact_hold = true, interact_primary_hold = true, jump_held = true }
 
     local function clear_press()
@@ -186,7 +184,7 @@ return function(ctx)
     local function board_seed(mg)
         if not next_random then return nil end
         if mg._is_server then return type(mg._seed) == "number" and mg._seed or nil end
-        local seed = mg._minigame_extension and initial_seeds[mg._minigame_extension]
+        local seed = ctx.initial_seed(mg._minigame_extension)
         if not seed then return nil end
         for _ = 1, MAX_DEALS do
             local symbols, targets
@@ -468,20 +466,6 @@ return function(ctx)
             previous_start = nil
             candidate_since = nil
         end
-    end)
-
-    -- The server hands extension n the level seed + n (minigame_system.lua:30-71) and syncs no seed to clients. A client
-    -- registers the same level units in the same order, so it counts from the same level seed.
-    mod:hook_safe("MinigameSystem", "init", function(self, context, system_init_data)
-        local seed = system_init_data and system_init_data.level_seed
-        next_seeds[self] = type(seed) == "number" and seed or nil
-    end)
-    mod:hook_safe("MinigameSystem", "on_add_extension", function(self, world, unit)
-        local seed = next_seeds[self]
-        if not seed then return end
-        local extension = self._unit_to_extension_map[unit]
-        if extension then initial_seeds[extension] = seed end
-        next_seeds[self] = seed + 1
     end)
 
     mod:hook_require("scripts/ui/views/scanner_display_view/minigame_decode_symbols_view", function(View)

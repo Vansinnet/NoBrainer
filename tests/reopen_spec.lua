@@ -1,5 +1,6 @@
 -- Run from the workspace root with tools/luajit/luajit.exe (see README.md).
--- Reopen-based speed-ups (DESIGN.md): Search transition skip and Symbols reroll, through a model of the character
+-- Reopen-based speed-ups (DESIGN.md): Search transition skip and Symbols reroll, plus the entry-frame features
+-- (Frequency pipeline, Drill seed-predicted opening), through a model of the character
 -- state machine around the real minigame state: cancel exits, a `decoding` interaction re-enters on the next frame
 -- and the new state initializes the minigame before consuming that frame's input
 -- (player_character_state_minigame.lua:138-148,206,270-342,376-402; decoding_interaction.lua:11-34). The server
@@ -72,7 +73,7 @@ local function machine(f, options)
         }
     end
     f.extensions[f.terminal] = { interactee_system = { interaction_type = function() return "decoding" end },
-        decoder_device_system = {} }
+        decoder_device_system = {}, minigame_system = C.mg._minigame_extension }
     if options.chest then
         -- A locked chest's block text fails can_interact (chest_extension.lua:21-33, interactee_extension.lua:137-177).
         f.chest = "chest"
@@ -92,6 +93,8 @@ local function machine(f, options)
         f.extensions[f.terminal].minigame_system = s.mg._minigame_extension
         s.mode = "minigame"
         assert(s.state:_check_initialize_minigame_from_unit(), "native initialization")
+        -- The local peer's terminal unit carries the client's extension (Drill's entry frame resolves it).
+        f.extensions[f.terminal].minigame_system = C.mg._minigame_extension
         if s == C then log.entries = log.entries + 1; if not s.manual then log.reopens = log.reopens + 1 end end
         s.manual = nil
     end
@@ -664,6 +667,217 @@ test("Frequency later session on the same device, W held through the entry: no m
     end
     print(string.format("  %d of 20 later sessions pipelined", pipelined))
     if not baseline then assert(pipelined >= 12, "most later sessions pipeline") end
+end)
+
+-- Drill seed-predicted opening (DESIGN.md): the first move on the entry frame, which the server runs right after its
+-- setup (player_character_state_minigame.lua:138-148). f:open starts a session at frame 0; each case leaves or solves
+-- it, then enters through the interaction.
+local DRILL5 = { drill_solve_speed = 5, enable_scan = false, enable_auto_scan = false }
+
+local function open_drill(seed, delay, options)
+    options = options or {}
+    local f = fixture(DRILL5)
+    local Drill = f.env.MinigameDrill
+    local init = Drill.init
+    Drill.init = function(self, unit, is_server, _, context) return init(self, unit, is_server, 9000 + seed * 17, context) end
+    f:open("drill", not options.local_server, delay or 0.05)
+    Drill.init = init
+    machine(f, options)
+    if options.no_opening then f.modules.drill.entry_input = function() end end
+    return f
+end
+
+-- A decoder needs a new hack after each interrupt (decoder_device_extension.lua:74-85,204-220): the server's
+-- decode_interrupt returns the solved minigame to gameplay (minigame_base.lua:52-54,82-92). The client keeps the
+-- solved stage until the new setup's receipt.
+local function interrupt(f, n)
+    f.server:decode_interrupt()
+    for _ = 1, 10 do f:ctick(n); n = n + 1 end
+    eq(f.client._current_stage, f.client._stage_amount + 1, "the client still shows the solved board")
+    eq(f.client:is_completed(), true)
+    return n
+end
+
+-- Tick from frame n until both sides walk, then `wait` seconds more; returns the next frame.
+local function walk(f, n, wait)
+    local C, S = f.sides.client, f.sides.server
+    local limit = n + 3000
+    while not (C.mode == "walking" and (not S or S.mode == "walking")) do
+        assert(n < limit, "never left the session")
+        f:ctick(n); n = n + 1
+    end
+    for _ = 1, math.ceil(wait / STEP) do f:ctick(n); n = n + 1 end
+    return n
+end
+
+-- Leave the opened session unsolved: no scanner view, so the solver leaves it alone.
+local function leave(f, wait)
+    f.visible = false
+    f:press_cancel()
+    local n = walk(f, 1, wait)
+    f.visible = true
+    return n
+end
+
+-- Interact at frame n and solve the new session. Records the server's setup time and first accepted move.
+local function enter(f, n, on_frame)
+    local server, start, started = f.server, f.t, false
+    local setup, axis = server.setup_game, server.on_axis_set
+    f.setup_t, f.first_move = nil, nil
+    server.setup_game = function(self) f.setup_t = f.t - LAG * STEP; return setup(self) end
+    server.on_axis_set = function(self, t, x, y)
+        local last = self._last_move
+        local result = axis(self, t, x, y)
+        if self._last_move ~= last and not f.first_move then f.first_move = t end
+        return result
+    end
+    f:press_interact()
+    for i = n, n + 3000 do
+        f:ctick(i)
+        if on_frame then on_frame(f, i - n) end
+        if server._current_stage == 1 then started = true end
+        if started and server:is_completed() and (not f.client or f.client:is_completed()) then
+            server.setup_game, server.on_axis_set = nil, nil
+            return f.t - start, i + 1
+        end
+    end
+end
+
+local function first_move_on_entry_frame(f)
+    return f.first_move ~= nil and f.setup_t ~= nil and math.abs(f.first_move - f.setup_t) < 1e-9
+end
+
+for _, delay in ipairs({ 0.03, 0.165 }) do
+    test("Drill opening on a kept board: entry-frame move, zero mistakes, saves the setup receipt, receipt delay=" .. delay,
+        function()
+        local with, without, opened = {}, {}, 0
+        for seed = 1, 40 do
+            local f = open_drill(seed, delay)
+            local elapsed = assert(enter(f, leave(f, 0.4)), "seed " .. seed .. ": stalled")
+            eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+            local lines = count(f, "^Drill opening: frame %d+, node %d+ toward %d+ %(kept board%)")
+            assert(lines <= 1, "seed " .. seed .. ": one opening per entry")
+            if lines == 1 then
+                opened = opened + 1
+                assert(first_move_on_entry_frame(f), "seed " .. seed .. ": the opening ran on the setup frame")
+            end
+            eq(count(f, "differs"), 0, "seed " .. seed .. ": kept board predicted")
+            with[#with + 1] = elapsed
+            local g = open_drill(seed, delay, { no_opening = true })
+            without[#without + 1] = assert(enter(g, leave(g, 0.4)), "seed " .. seed .. ": stalled without opening")
+            eq(g.server._mistakes, 0)
+            assert(not first_move_on_entry_frame(g), "seed " .. seed .. ": without the opening the first move waits")
+        end
+        print(string.format("  mean solve %.3fs with the opening (%d of 40 opened), %.3fs without", mean(with), opened,
+            mean(without)))
+        if not baseline then
+            assert(opened >= 36, "most boards open on the entry frame")
+            assert(mean(with) < mean(without) - delay, "the opening saves at least one receipt delay")
+        end
+    end)
+end
+
+test("Drill re-hack after a decoder interrupt: no early exit, opening on the new board from the client's seed", function()
+    local opened = 0
+    for seed = 1, 30 do
+        local f = open_drill(seed, 0.05)
+        local n = walk(f, 1, 0.5)
+        eq(f.server:is_completed(), true, "seed " .. seed .. ": first session solved")
+        n = interrupt(f, n)
+        local before = f.server._start_seed
+        assert(enter(f, n), string.format("seed %d: second session stalled (client %s, stage %s, state %s; server "
+            .. "stage %s, state %s)\n%s", seed, f.sides.client.mode, tostring(f.client._current_stage),
+            tostring(f.client._current_state), tostring(f.server._current_stage), tostring(f.server._current_state),
+            table.concat(f.debug_lines, "\n")))
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        assert(f.server._start_seed ~= before, "seed " .. seed .. ": the server generated a new board")
+        eq(count(f, "differs"), 0, "seed " .. seed .. ": new board predicted")
+        if count(f, "%(seed board%)") == 1 then
+            opened = opened + 1
+            assert(first_move_on_entry_frame(f), "seed " .. seed .. ": the opening ran on the setup frame")
+        end
+    end
+    assert(opened >= 26, "too few seed openings: " .. opened)
+end)
+
+test("Drill opening on a terminal's first board from the rebuilt client seed", function()
+    local opened = 0
+    for seed = 1, 30 do
+        local f = open_drill(seed, 0.05)
+        local n = leave(f, 0.4)
+        -- A terminal no client has seen a board of: the server deals from its extension seed, level seed + 2.
+        local level_seed = 4000 + seed * 29
+        for _, mg in ipairs({ f.server, f.client }) do f.env.table.clear(mg._correct_targets) end
+        f.server._seed, f.client._seed = level_seed + 2, nil
+        register_client_seed(f, level_seed)
+        assert(enter(f, n), "seed " .. seed .. ": stalled")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        eq(f.server._start_seed, level_seed + 2, "seed " .. seed .. ": the server dealt from the extension seed")
+        eq(count(f, "differs"), 0, "seed " .. seed .. ": first board predicted")
+        if count(f, "%(first seed board%)") == 1 then
+            opened = opened + 1
+            assert(first_move_on_entry_frame(f), "seed " .. seed .. ": the opening ran on the setup frame")
+        end
+    end
+    assert(opened >= 26, "too few first-seed openings: " .. opened)
+end)
+
+test("Drill opening on a wrong board: no mistake, planned aim stays on, later entries do not open", function()
+    local checked, held = 0, 0
+    for seed = 1, 30 do
+        local f = open_drill(seed, 0.05)
+        local n = interrupt(f, walk(f, 1, 0.5))
+        -- A divergence the client cannot see: the server's seed moves one draw before the next board.
+        f.server._seed = f.env.math.next_random(f.server._seed, 1, 2)
+        local holds = count(f, "^Drill hold:")
+        local _, after = enter(f, n)
+        assert(after, "seed " .. seed .. ": stalled on the wrong board")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        if count(f, "^Drill opening: frame") == 1 then
+            checked = checked + 1
+            eq(count(f, "seeded openings switched off"), 1, "seed " .. seed .. ": switched off")
+            eq(count(f, "unexplained"), 0, "seed " .. seed .. ": the board, not the aim model, was wrong")
+            held = held + count(f, "^Drill hold:") - holds
+            assert(enter(f, interrupt(f, walk(f, after, 0.5))), "seed " .. seed .. ": third session stalled")
+            eq(f.server._mistakes, 0)
+            eq(count(f, "^Drill opening: frame"), 1, "seed " .. seed .. ": no opening after the switch-off")
+        end
+    end
+    assert(checked >= 20, "too few wrong boards opened: " .. checked)
+    assert(held > 0, "planned holds continue after a wrong board")
+end)
+
+test("Drill quick re-entry within the server's repeat delay: no opening, no mistake", function()
+    for seed = 1, 20 do
+        local f = open_drill(seed, 0.05)
+        -- The decoder allows the entry 0.1 s after the last one (decoder_device_extension.lua:292-305).
+        assert(enter(f, leave(f, 0.1)), "seed " .. seed .. ": stalled")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake")
+        eq(count(f, "^Drill opening: frame"), 0, "seed " .. seed .. ": too soon after the stop")
+    end
+end)
+
+test("Drill opening with W held through the entry, and on a local server", function()
+    local opened, local_opened = 0, 0
+    for seed = 1, 20 do
+        local f = open_drill(seed, 0.05)
+        local n = leave(f, 0.4)
+        -- Walked up holding W, released two frames after the entry frame.
+        f.raw.move_forward, f.raw.move = 1, f.env.Vector3(0, 1, 0)
+        assert(enter(f, n, function(g, i)
+            if i == 3 then g.raw.move_forward, g.raw.move = 0, g.env.Vector3.zero() end
+        end), "seed " .. seed .. ": stalled with W held")
+        eq(f.server._mistakes, 0, "seed " .. seed .. ": mistake with W held")
+        if count(f, "^Drill opening: frame") == 1 then
+            opened = opened + 1
+            assert(first_move_on_entry_frame(f), "seed " .. seed .. ": W did not replace the opening")
+        end
+        local g = open_drill(seed, nil, { local_server = true })
+        assert(enter(g, leave(g, 0.4)), "seed " .. seed .. ": stalled on a local server")
+        eq(g.server._mistakes, 0, "seed " .. seed .. ": mistake on a local server")
+        if count(g, "^Drill opening: frame") == 1 then local_opened = local_opened + 1 end
+    end
+    assert(opened >= 17 and local_opened >= 17, "openings with W held " .. opened .. ", local " .. local_opened)
 end)
 
 test("Frequency on a local server: every stage in the first press frame", function()

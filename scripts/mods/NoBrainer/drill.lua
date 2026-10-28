@@ -6,7 +6,39 @@ local CONE, POWER = math.pi / 3, Settings.drill_move_distance_power -- minigame_
 local STEP, MARGIN = math.rad(0.25), math.rad(0.5)
 local HOLD = 2.5 -- the result tolerance cancel_requested gives any move
 local ACK = Settings.drill_move_delay * 0.5 -- earlier registrations are at least one repeat delay older
+local REENTRY = Settings.drill_move_delay + 0.05 -- every move of a terminal's last session ran before its stop
 local angles, points = {}, {}
+local scratch = { _targets = {}, _correct_targets = {} }
+
+-- The stage-1 board the server plays after its setup (minigame_drill.lua:71-94): the kept board while targets remain,
+-- else a new one from the minigame's seed (:125-166). A client never receives a seed: the one its last received board
+-- left matches the server's, and before any board the terminal's first seed does.
+local function predict(ctx, mg)
+    local targets, goal, source = mg._targets[1], mg._correct_targets[1], "kept"
+    if #mg._correct_targets == 0 then
+        local seed, Drill = mg._seed, CLASS.MinigameDrill
+        source = type(seed) == "number" and "seed" or "first seed"
+        if type(seed) ~= "number" then seed = ctx.initial_seed(mg._minigame_extension) end
+        if type(seed) ~= "number" or not Drill then return nil end
+        Drill.generate_targets(scratch, seed)
+        targets, goal = scratch._targets[1], scratch._correct_targets[1]
+    end
+    if not targets or not goal then return nil end
+    local board = { goal = goal, source = source }
+    for i = 1, #targets do board[i] = { x = targets[i].x, y = targets[i].y } end
+    return board
+end
+
+local function same_board(mg, board)
+    local targets = mg:targets()[1]
+    if mg:current_stage() ~= 1 or mg:correct_targets()[1] ~= board.goal or not targets or #targets ~= #board then
+        return false
+    end
+    for i = 1, #board do
+        if targets[i].x ~= board[i].x or targets[i].y ~= board[i].y then return false end
+    end
+    return true
+end
 
 local function movement(action, x, y)
     if action == "move_left" then return math.max(-x, 0) end
@@ -35,6 +67,11 @@ return function(ctx)
     local holding = true -- cleared after a held move the server ignored
     local ack_wait -- when a submission was otherwise ready but waited for the server to run later input
     local press_frame -- input frame of this stage's last submission
+    -- Seed-predicted opening (DESIGN.md): the first move on the entry frame, before any setup receipt.
+    local seeded = true -- cleared after a received board differed from the prediction
+    local entry, entry_frame -- the planned entry move { mg, t, frame, x, y, node, board }, and the frame last planned
+    local entry_board, entry_x, entry_y -- an adopted entry move's board, checked against the first fresh receipts
+    local stopped = setmetatable({}, { __mode = "k" }) -- minigame -> gameplay time its last session stopped
 
     local function opening(mg)
         local receipt = openings[mg]
@@ -106,8 +143,7 @@ return function(ctx)
 
     -- Direct aim when the server selects it with margin, else the nearest offset that does.
     -- A held move must also select nothing from the goal, so a repeat or replayed input is inert.
-    local function aim(mg, s, selected, goal, hold)
-        local targets = mg:targets()[s]
+    local function aim(targets, selected, goal, hold)
         local from = selected and targets[selected]
         local cx, cy = from and from.x or 0, from and from.y or 0
         local gx, gy = targets[goal].x, targets[goal].y
@@ -145,8 +181,10 @@ return function(ctx)
         table.clear(pulse)
         cache_game, cache_stage, cache_index, cache_target = nil, nil, nil, nil
         ack_wait, press_frame = nil, nil
-        -- A new mission re-arms prediction and holding after a one-off anomaly.
-        if reason == "gameplay_exit" then trusted, holding = model, true end
+        entry_board, entry_x, entry_y = nil, nil, nil
+        if reason ~= "identity" then entry, entry_frame = nil, nil end
+        -- A new mission re-arms prediction, holding and seeded openings after a one-off anomaly.
+        if reason == "gameplay_exit" then trusted, holding, seeded = model, true, true end
     end
 
     function module.observe(mg, t)
@@ -160,6 +198,13 @@ return function(ctx)
             module.reset("identity")
             game, ready_at = mg, t + ctx.pacing("drill_solve_speed") * 0.35
             last_selected = mg:selected_index() -- a retained selection is not a surprise
+            if entry and entry.mg == mg then
+                -- The entry move is this session's first move; its board is checked once the setup receipts arrive.
+                pending_since, pending_frame, predicted = entry.t, entry.frame, entry.node
+                entry_board, entry_x, entry_y = entry.board, entry.x, entry.y
+                ready_at = math.max(ready_at, entry.t + Settings.drill_move_delay)
+            end
+            entry = nil
         end
         if observed == t then return end
         observed = t
@@ -170,7 +215,7 @@ return function(ctx)
             -- Our press advanced the stage: hold the next first move across the native transition end.
             if trusted and holding and stage and s == stage + 1 and index and press_t and not mg:selected_index()
                 and ctx.pacing("drill_solve_speed") == 0 then
-                burst_x, burst_y, burst_index = aim(mg, s, nil, index, true)
+                burst_x, burst_y, burst_index = aim(mg:targets()[s], nil, index, true)
                 if burst_x then
                     local resume = press_t + Settings.drill_transition_time
                     -- A receipt after the expected resume: the server is most likely in gameplay already, so hold
@@ -221,6 +266,18 @@ return function(ctx)
                 ready_at = math.max(ready_at, t + Settings.drill_move_delay)
                 ctx.mod:debug("Drill hold: no result %.3fs after press, holding switched off", t - burst_press)
             end
+        end
+        if entry_board then
+            if not same_board(mg, entry_board) then
+                -- The entry move ran on the received board from the origin: expect what it selects there.
+                local node, margin = choose(mg:targets()[1], 0, 0, nil, entry_x, entry_y)
+                predicted = margin >= MARGIN and node or nil
+                if not node and margin >= MARGIN then pending_since, pending_frame = nil, nil end
+                seeded = false
+                ctx.mod:debug("Drill opening: the received board differs from the %s prediction, "
+                    .. "seeded openings switched off", entry_board.source)
+            end
+            entry_board = nil
         end
         local synced = selected == index and math.abs(cursor.x - target_x) <= 1 / 128
             and math.abs(cursor.y - target_y) <= 1 / 128
@@ -292,7 +349,7 @@ return function(ctx)
                     local selected, dx, dy = game:selected_index()
                     -- Plan only from a confirmed native position: a target or the reset origin.
                     if trusted and (selected or math.abs(cursor_x) + math.abs(cursor_y) < 1 / 64) then
-                        dx, dy, predicted = aim(game, stage, selected, target_index)
+                        dx, dy, predicted = aim(game:targets()[stage], selected, target_index)
                     else
                         dx, dy = target_x - cursor_x, cursor_y - target_y
                         local length = math.sqrt(dx * dx + dy * dy)
@@ -310,8 +367,38 @@ return function(ctx)
         return original
     end
 
+    -- The entry frame is sampled before the state initializes `mg`, and the server runs it right after its setup
+    -- (player_character_state_minigame.lua:138-148,376-402), so a move planned on the predicted board selects there.
+    -- The server keeps its repeat timer across sessions (minigame_drill.lua:71-94,274), so a quick re-entry waits.
+    function module.entry_input(action, mg, t)
+        local frame = ctx.input_frame
+        if frame and t and entry_frame ~= frame then
+            entry_frame = frame
+            if not (entry and entry.mg == mg and t - entry.t < Settings.drill_move_delay) then
+                entry = nil
+                if seeded and trusted and mg.correct_targets and ctx.settings.enable_drill_auto
+                    and ctx.pacing("drill_solve_speed") == 0 and not (stopped[mg] and t - stopped[mg] <= REENTRY) then
+                    local board = predict(ctx, mg)
+                    local x, y, node
+                    if board then x, y, node = aim(board, nil, board.goal) end
+                    if board and node then
+                        entry = { mg = mg, t = t, frame = frame, x = x, y = y, node = node, board = board }
+                        ctx.mod:debug("Drill opening: frame %d, node %d toward %d (%s board)", frame, node, board.goal,
+                            board.source)
+                    end
+                end
+            end
+        end
+        if entry and entry.frame == frame then return movement(action, entry.x, entry.y) end
+    end
+
     function module.settings_changed(id)
         if id == "enable_drill_auto" or id == "drill_solve_speed" then module.reset("settings") end
+    end
+
+    -- A re-entered terminal still shows its last session's completion until this session's setup receipts arrive.
+    function module.completed(mg)
+        return fresh(mg) and mg:is_completed()
     end
 
     function module.cancel_requested()
@@ -344,6 +431,10 @@ return function(ctx)
         end
     end)
     ctx.mod:hook_safe("MinigameDrill", "stop", function(self, is_automatic)
+        -- A local stop, or another player's session ending; the server echoes our own stop later without arguments.
+        local receipt = openings[self]
+        if is_automatic ~= nil or receipt and receipt.foreign then stopped[self] = ctx.time() end
+        if is_automatic ~= nil and entry and entry.mg == self then entry = nil end
         if is_automatic ~= nil or not ctx.session_valid(self) then
             openings[self] = nil
             if self == game then module.reset("session_end") end

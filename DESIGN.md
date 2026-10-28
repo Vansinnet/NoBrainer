@@ -2,10 +2,11 @@
 
 ## Structure (2026-10-25)
 
-NoBrainer is BetterBrainer plus the Skitarius servo-skull command, Symbols reroll (with exact lookahead from the terminal's seed) and Search transition skip (user decision, 2026-10-25). BetterBrainer itself is 1.0.4 plus the Frequency pipeline; the shared solver design is in `mods/active/BetterBrainer/DESIGN.md`. This file covers what differs: the reopen controller and the two features that use it.
+NoBrainer is BetterBrainer plus the Skitarius servo-skull command, Symbols reroll (with exact lookahead from the terminal's seed), Search transition skip (user decision, 2026-10-25) and the Drill seed-predicted opening (user decision, 2026-10-28). BetterBrainer itself is 1.0.4 plus the Frequency pipeline; the shared solver design is in `mods/active/BetterBrainer/DESIGN.md`. This file covers what differs: the reopen controller, the two features that use it, and the Drill opening.
 
-- `NoBrainer.lua`: BetterBrainer's core (`BetterBrainer.lua`) plus the reopen controller. It also has the ModID, path and data-file names changed, a one-time migration of 3.1-era speed settings (`_speed_schema_v2`), and the servo skull module, which `mod.update` calls every frame while the mod is enabled.
-- `drill.lua`, `frequency.lua`, `scan.lua`: identical copies of BetterBrainer's modules. Keep them identical: change BetterBrainer first, then copy.
+- `NoBrainer.lua`: BetterBrainer's core (`BetterBrainer.lua`) plus the reopen controller, the client seed counter (`ctx.initial_seed`, used by Symbols and Drill) and the entry-frame lookup of the minigame being entered. It also has the ModID, path and data-file names changed, a one-time migration of 3.1-era speed settings (`_speed_schema_v2`), and the servo skull module, which `mod.update` calls every frame while the mod is enabled.
+- `frequency.lua`, `scan.lua`: identical copies of BetterBrainer's modules. Keep them identical: change BetterBrainer first, then copy.
+- `drill.lua`: BetterBrainer's module plus the seed-predicted opening and `completed` (the fast exit's check for this session's receipts). A change to the shared Drill solver is made in both mods by hand.
 - `balance.lua`: BetterBrainer's module with the centre-hold controller (below), built here first by user decision. Copy it to BetterBrainer once it passes in game.
 - `symbols.lua`, `search.lua`: BetterBrainer's modules plus Symbols reroll and Search transition skip. BetterBrainer's versions are the 1.0.4 files, so a change to those solvers is made in both mods.
 - `servo_skull.lua`: NoBrainer's servo-skull command as a core module (`return function(ctx) ... end` with `update(dt, t)`, `reset`, `settings_changed`). It reads `ctx.settings`; its logic is unchanged from 3.2.0.
@@ -22,6 +23,8 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 - 2026-10-25 (user: "jag vill återgå i betterbrainer till 1.0.4 ... de är för starka"): Symbols reroll and Search transition skip are NoBrainer-only. BetterBrainer is back to 1.0.4 plus the Frequency pipeline.
 - 2026-10-25 (user): both on by default in NoBrainer: `decode_reroll_limit` 8 (range 0-8) and `enable_expedition_reopen` on (it acts at expedition speed 5 only).
 - Every reopen feature has a kill switch for the rest of the mission after any failure, like the Search pre-send and Drill holding. Failures cost time, never a wrong press.
+- 2026-10-28 (user: "Ja, bygg det", after a read-only analysis of the Drill speed floor the same day): build the Drill seed-predicted opening in NoBrainer only. BetterBrainer had rejected it on 2026-10-14 because a client could not yet reproduce a minigame's seed; the Symbols seed counter has done that in game since 2026-10-25. The analysis found the rest of Drill at speed 5 within a few frames of the server's timers (0.5 s search, 0.6 s transition), and network forging impossible: the server registers only `rpc_minigame_sync_frequency_test_frequency` from clients (`minigame_system.lua:8-43`).
+- 2026-10-28: the Drill fast exit waits for this session's receipts (`drill.completed`). Found while building the opening: on a re-hack of the same terminal (a decoder needs one after every interrupt) the client still shows the solved stage until the new setup's receipt, so the fast exit cancelled the new session as soon as the scanner view was open (offline harness; not seen in game). BetterBrainer's core has the same check.
 - 2026-10-28 (user: "bygg den i nobrainer först, och fungerar den bra lägger vi in den i betterbrainer också"): Balance holds the point as close to the centre as the server allows. Built in NoBrainer first; BetterBrainer gets the same `balance.lua` after an in-game pass.
 
 ## Balance centre hold (`balance.lua`)
@@ -63,6 +66,17 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
   - Client: no seed is synced. The server hands extension n `level_seed + n` (`minigame_system.lua:30-71`); safe hooks on `MinigameSystem.init` and `on_add_extension` count the client's own registrations from the `level_seed` in its init data (`gameplay_init_step_extensions.lua:133-136`). Level units register in `Level.units` order on both peers. The solver deals up to 256 boards from the terminal's first seed until one matches the received symbols and targets, so earlier openings by anyone are covered.
   - Unknown seed (no match, hooks registered mid-mission, minigame units spawned at runtime, hot reload): the average board decides, as before.
 
+## Drill seed-predicted opening (`drill.lua`, `NoBrainer.lua`)
+- Why: without it the first move waits for the setup receipts (`fresh`), about one receipt delay plus input lag after the entry. The entry frame is sampled before the state initializes the minigame, and the server runs that frame's input right after its own setup (`player_character_state_minigame.lua:138-148,376-402`), so a move planned on the right board selects on the setup frame. The server keeps the stage-1 board while targets remain and otherwise generates one from the minigame's seed (`minigame_drill.lua:71-94,125-166`).
+- How: on the entry frame the core resolves the minigame from the state's `minigame_character_state` component, as the state's own initialization does, and asks `drill.entry_input`. At speed 5, with planned aim trusted and seeded openings on, Drill predicts the board and sends the planned aim from the origin when it has a robust winner (`aim`, the same planner as every move):
+  - Kept board: the client's own targets (`source kept`).
+  - New board: `MinigameDrill.generate_targets` on a scratch table from the client's `_seed`, which the client's last received board left equal to the server's (`seed`), or before any board from the terminal's first seed, `ctx.initial_seed` (`first seed`).
+  - On the session start the solver adopts the move as its pending first move. Once the setup receipts arrive it compares the received stage-1 board with the prediction.
+- Re-entry: the server's repeat timer survives sessions (`minigame_drill.lua:274`), so no opening within 0.3 s of the terminal's last stop. That is a local stop, or another player's stop received; the server's later argumentless echo of our own stop is ignored.
+- Failure: a different board switches seeded openings off for the mission. The move then ran on the received board from the origin, so the solver expects what the native rule selects there, and planned aim and holding stay on. Presses still need this session's receipts, so a wrong prediction costs at most a repeat delay, never a wrong press. A lost entry frame takes the ordinary lost-move path (2.5 s).
+- Fast exit: a re-entered terminal shows its last session's completion until this session's receipts arrive, so the Drill fast exit requires them (`drill.completed`).
+- Offline (`tests/reopen_spec.lua`, 2026-10-28): kept board 39 of 40 opened on the entry frame; mean solve from the interact 3.045 s against 3.143 s without the opening at 30 ms receipts, 3.224 s against 3.458 s at 165 ms. A re-hack after a decoder interrupt opens from the client's seed with no early exit; this case stalled before the fast-exit fix. Also covered: the first board from a rebuilt seed, a wrong board (switch-off, no mistake, holds continue, no later opening), a quick re-entry (no opening), W held through the entry, and a local server.
+
 ## Source contracts
 | Use | Source path:line |
 |---|---|
@@ -78,6 +92,7 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
 | Minigame seeds | `scripts/extension_systems/minigame/minigame_system.lua:30-71`; `scripts/foundation/managers/extension/extension_system_base.lua:94-114`; `gameplay_init_step_extensions.lua:133-136`; `scripts/game_states/game/state_gameplay.lua:29`; `minigame_base.lua:7-32` |
 
 ## Tests
+- 2026-10-28, with the Drill opening: `tests/reopen_spec.lua` 31/31 (the 24 cases below plus seven Drill opening cases, see that section); speed 73/73, search 21/21, drill 36/36, balance 7/7, scan markers 4/4, servo skull 4/4.
 - `tests/reopen_spec.lua` 24/24 (2026-10-25): a corrected session that comes back (Search and Symbols, fail without the fix), an expedition terminal on a locked chest (fails without the fix; an openable chest in focus still blocks the reopen), Search transition skip, Symbols reroll (average board and exact boards from the server or a rebuilt client seed), a replayed old session before the re-entry, the player's own cancel right after a re-entry, a session lost without on_exit, and the Frequency pipeline. Other suites: speed 73/73, search 21/21, drill 36/36, scan markers 4/4, servo skull 4/4. Results and cases are in `mods/active/BetterBrainer/tests/README.md` history (before b67e52a) and in this repository's `tests/`.
 
 ## Runtime status
@@ -88,8 +103,9 @@ Never enable NoBrainer and BetterBrainer together: both automate the same input.
   - Symbols, km_station: 5 hack starts, 21 rerolls and 5 kept boards, all `(seed)`; every resume after its own interact (0.075-0.178 s after the request); no session lost, no switch-off, no Lua errors; a manual cancel and re-entry worked.
   - Search, exp_wastes (Skitarius): 2 terminals, both transitions skipped on each (4 reopens, resumed 0.050-0.058 s after the request); every reopen was followed by a correction (session lost 0.050-0.067 s after the resume, back within 0.025 s); no resync, no switch-off.
   - `auspex hooks --mod NoBrainer`: 39 targets hooked; the 5 view targets are lazy (hooked when the first terminal opened); the 4 `method_missing` scan targets are Auspex attributing `action_scan_confirm` and `mission_objective_zone_scannable_extension` hooks to `auspex_scanning_effects`.
-- Not yet tested in game: the Balance centre hold (2026-10-28), the servo skull module in its new form (skipped by the user on 2026-10-27) and the Frequency pipeline.
+- Not yet tested in game: the Drill seed-predicted opening and the Drill fast exit's receipt check (2026-10-28), the Balance centre hold (2026-10-28), the servo skull module in its new form (skipped by the user on 2026-10-27) and the Frequency pipeline.
 - Smallest remaining test, as a client in a regular mission: as Skitarius with the hacking servo skull and auto-hack on, walk within 25 m of a hackable terminal: the skull should be ordered to it; solve a Frequency terminal at speed 5.
+- Smallest remaining Drill test, as a client in a mission with Drill decoders (`cm_habs`), Drill speed 5, DMF debug log on: hack the same decoder at least twice (after each interrupt). Each hack should log `Drill opening: frame ...` and then `Drill move: ... registered +0.000` with the predicted node; the second hack should say `(seed board)` and must not close by itself; no `differs` or `unexplained` line. Then `auspex hooks --mod NoBrainer`.
 
 ## Open items
 - 2026-10-25: resolved. `NoBrainerDebug` (it read the 3.2 solvers through `mod._frame_snapshot()`) is retired to `mods/archived/`; diagnose with the DMF debug log, dt-cli probes and Census (`darktide-nobrainer-runtime-diagnostics`). NoBrainer keeps no debug-only APIs.
