@@ -1,6 +1,6 @@
 # NoBrainer
 
-Current release: **4.1.1**.
+Current release: **4.2.0**.
 
 A Darktide Mod Framework (DMF) mod that assists with Darktide's minigames. NoBrainer is BetterBrainer's solvers plus NoBrainer's Skitarius servo-skull command, Symbols rerolls and Search transition skips. The last two are NoBrainer-only.
 
