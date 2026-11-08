@@ -73,7 +73,7 @@ local function nearest_hack_target(smart_tag_system, player_unit, player_positio
 	local nearest_distance_sq = command_range_sq
 
 	for unit, extension in pairs(smart_tag_system._unit_extension_data) do
-		if unit ~= player_unit and Unit.alive(unit) and extension._target_type == "hack" then
+		if extension._target_type == "hack" and unit ~= player_unit and Unit.alive(unit) then
 			local template = extension:contextual_tag_template(player_unit, true)
 
 			if template and template.name == COMPANION_HACK_TAG then
@@ -175,6 +175,14 @@ function module.update(dt, t)
 	end
 
 	if attempt_state.phase ~= "idle" or t < next_order_at then
+		return
+	end
+
+	-- The companion hack tag needs a companion (cryptic_double_tag_settings.lua:5-10): without one, skip the scan.
+	local companion_spawner_extension = ScriptUnit.has_extension(player_unit, "companion_spawner_system")
+	local companions = companion_spawner_extension and companion_spawner_extension:companion_units()
+
+	if not companions or #companions == 0 then
 		return
 	end
 

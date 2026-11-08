@@ -10,8 +10,8 @@ local function test(name, body)
 end
 print("NoBrainer servo skull tests | " .. jit.version)
 
-local function fixture(settings)
-    local f = { orders = {}, state = nil }
+local function fixture(settings, companions)
+    local f = { orders = {}, state = nil, scanned = 0 }
     local player_unit, terminal = { name = "player" }, { name = "terminal" }
     -- The module only uses these as identifiers.
     local Companion = { STATES = { hacking = "hacking" } }
@@ -21,7 +21,10 @@ local function fixture(settings)
         _all_tags = tags,
         _unit_extension_data = { [terminal] = {
             _target_type = "hack",
-            contextual_tag_template = function() return { name = "hacking_over_here_companion" } end,
+            contextual_tag_template = function()
+                f.scanned = f.scanned + 1
+                return { name = "hacking_over_here_companion" }
+            end,
             target_actor = function() return nil end,
         } },
         set_contextual_unit_tag = function(_, tagger, target)
@@ -38,7 +41,14 @@ local function fixture(settings)
     end
     env.Unit = { alive = function(u) return u ~= nil end, world_position = function() return { 0, 0, 0 } end }
     env.Vector3 = { distance_squared = function() return 4 end }
-    env.ScriptUnit = { has_extension = function() return nil end }
+    -- The native companion hack tag needs a companion (cryptic_double_tag_settings.lua:5-10).
+    local spawner = {
+        companion_units = function() return companions or { { name = "servo skull" } } end,
+        spawned_unit_lookup = function() return nil end, -- no skull state to read
+    }
+    env.ScriptUnit = { has_extension = function(unit, system)
+        if unit == player_unit and system == "companion_spawner_system" then return spawner end
+    end }
     env.GameSession = {}
     env.Managers = {
         player = { local_player_safe = function() return { player_unit = player_unit } end },
@@ -78,6 +88,13 @@ test("range comes from ctx.settings", function()
     local f = fixture(settings)
     f.module.update(0.02, 10)
     assert(#f.orders == 0, "out of range")
+end)
+
+test("without a companion: no scan, no order", function()
+    local f = fixture(base, {})
+    f.module.update(0.02, 10)
+    f.module.update(0.02, 10.1)
+    assert(#f.orders == 0 and f.scanned == 0, "orders " .. #f.orders .. ", scanned " .. f.scanned)
 end)
 
 test("reset and settings_changed exist and clear timers", function()
