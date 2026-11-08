@@ -573,6 +573,45 @@ for _, kind in ipairs({ "frequency", "decode_search", "decode_symbols" }) do
     end
 end
 
+-- Lifecycle boundaries in the middle of a session: the session ends at once, nothing automated runs while the mod is
+-- disabled, and whatever the solver does afterwards in the same session never scores a mistake.
+for _, kind in ipairs({ "frequency", "decode_search", "decode_symbols" }) do
+    for _, boundary in ipairs({ "disable", "gameplay exit", "unload", "settings" }) do
+        test("Lifecycle mid-session: " .. kind .. ", " .. boundary .. ": no automation left over, no mistake afterwards", function()
+            local f = fixture({ frequency_solve_speed = 5, expedition_solve_speed = 5 })
+            f.ping = 0.33
+            f:open(kind, true, 0.165)
+            local frame = 0
+            for _ = 1, 15 do frame = frame + 1; f:tick(frame) end
+            assert(f.ctx.active_minigame ~= nil, "session selected before the boundary")
+            if boundary == "disable" then f.enabled = false; f.mod.on_disabled()
+            elseif boundary == "gameplay exit" then f.mod.on_game_state_changed("exit", "StateGameplay")
+            elseif boundary == "unload" then f.mod.on_unload(false)
+            end
+            local auto = kind == "frequency" and "enable_frequency_auto"
+                or kind == "decode_search" and "enable_expedition_auto_solve" or "enable_decode_auto"
+            -- Auto-solve off for a second through the mod options: the solver resets, the core keeps the session.
+            if boundary == "settings" then f:set(auto, false) end
+            if boundary ~= "settings" then eq(f.ctx.active_minigame, nil, "session ended by the boundary") end
+            if boundary == "disable" or boundary == "settings" then
+                for _ = 1, 50 do
+                    frame = frame + 1
+                    local sample = f:tick(frame)
+                    eq(sample.action_one_hold, false, "no automated press while off")
+                    eq(sample.action_two_pressed, false, "no automated cancel while off")
+                end
+                if boundary == "disable" then f.enabled = true; f.mod.on_enabled(false) else f:set(auto, true) end
+            end
+            for _ = 1, 1500 do
+                frame = frame + 1
+                f:tick(frame)
+                if f.server:is_completed() then break end
+            end
+            eq(f.server._mistakes, 0, "no mistake after the boundary")
+        end)
+    end
+end
+
 test("Symbols early stop retires board proof even when a later clock arrives", function()
     local f = symbols_case()
     f:receipt("symbols")

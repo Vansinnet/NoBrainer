@@ -542,9 +542,17 @@ mod.on_setting_changed = function(id)
     end
 end
 
-mod.on_enabled = function()
+-- Both mods automate the same input: say so when the other one is enabled too.
+local function warn_if_both_enabled()
+    local other = get_mod("BetterBrainer")
+    if other and other:is_enabled() and mod:is_enabled() then mod:warning(mod:localize("both_enabled_warning")) end
+end
+mod.on_all_mods_loaded = warn_if_both_enabled
+
+mod.on_enabled = function(initial_call)
     for id, definition in pairs(definitions) do read_setting(id, definition) end
     reset("enabled")
+    if not initial_call then warn_if_both_enabled() end
 end
 
 mod.on_disabled = function()

@@ -64,6 +64,8 @@ local localizations = {
     enable_frequency_auto_tooltip = { en = "Automatically steers the waveform toward the target and submits when aligned.", ["zh-tw"] = "自動將波形導向目標，對齊後提交。", ["zh-cn"] = "自动将波形导向目标，对齐后提交。", ru = "Автоматически направляет сигнал к цели и подтверждает при совпадении." },
     frequency_solve_speed = { en = "Auto-Solve Speed", ["zh-tw"] = "自動解題速度", ["zh-cn"] = "自动解题速度", ru = "Скорость авторешения" },
     frequency_solve_speed_tooltip = { en = "Auto-solve pace (1=normal manual pace, 5=fastest). Every speed uses the same precise deterministic steering.", ["zh-tw"] = "自動解題速度（1＝一般手動速度，5＝最快）。所有速度都使用相同的精準固定導引。", ["zh-cn"] = "自动解题速度（1＝一般手动速度，5＝最快）。所有速度都使用相同的精准固定导引。", ru = "Темп авторешения (1=обычный ручной темп, 5=самый быстрый). Все скорости используют один и тот же точный детерминированный алгоритм." },
+
+    both_enabled_warning = { en = "NoBrainer and BetterBrainer are both enabled. They automate the same minigames: disable one of them.", ["zh-tw"] = "NoBrainer 與 BetterBrainer 同時啟用。兩者會自動操作相同的小遊戲，請停用其中一個。", ["zh-cn"] = "NoBrainer 与 BetterBrainer 同时启用。两者会自动操作相同的小游戏，请禁用其中一个。", ru = "NoBrainer и BetterBrainer включены одновременно. Оба автоматизируют одни и те же мини-игры: отключите один из них." },
 }
 
 local language = mod:get("language")

@@ -46,6 +46,9 @@ assert(fixture_text:match("return f\nend\n$"), "historical fixture ending change
 fixture_text = M.replace(fixture_text, "env.math.atan2 = math.atan", "env.math.atan2 = math.atan2")
 fixture_text = M.replace(fixture_text, "{ rewind_ms = function() return f.rewind or 0 end }",
     "{ rewind_seconds = function() return f.rewind or 0 end }")
+-- The other Brainer mod is not installed in the tests (the both-enabled warning asks for it).
+fixture_text = M.replace(fixture_text, "env.get_mod = function(name) eq(",
+    'env.get_mod = function(name) if name:find("Brainer$") and not ROOT:find(name, 1, true) then return nil end eq(')
 fixture_text = M.replace(fixture_text, 'local ROOT = "mods/active/BetterBrainer/scripts/mods/BetterBrainer/"',
     'local ROOT = "' .. ROOT .. '"')
 fixture_text = M.replace(fixture_text, 'eq(name, "BetterBrainer", "mod name")', 'eq(name, "NoBrainer", "mod name")')
