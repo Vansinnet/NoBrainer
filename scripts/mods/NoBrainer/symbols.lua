@@ -260,13 +260,7 @@ return function(ctx)
     end
 
     function module.start(mg, player)
-        if not player then
-            if ctx.session_valid(mg) then return end
-            if game == mg then module.reset("ownership_changed") end
-            if not mg._is_server then clock_receipts[mg] = false end
-            board_receipts[mg] = nil
-            return
-        end
+        if not player and ctx.session_valid(mg) then return end
         if not ctx.is_local_player(player) then
             if game == mg then module.reset("ownership_changed") end
             if not mg._is_server then clock_receipts[mg] = false end
@@ -375,8 +369,6 @@ return function(ctx)
         if not holds[action] or not ctx.settings.enable_decode_auto or not t
             or not game or ctx.active_minigame ~= game
             or observed_at ~= t or game:is_completed() then return original end
-        -- Core observes at the fixed time used by HumanInputHandler serialization.
-        if source ~= "input_service" then return original end
         local stage, start = predicted_stage, game._decode_start_time
         local target = game._decode_targets and game._decode_targets[stage]
         local items, sweep = game._decode_symbols_items_per_stage, game._decode_symbols_sweep_duration

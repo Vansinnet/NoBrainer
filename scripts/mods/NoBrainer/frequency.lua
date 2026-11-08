@@ -1,18 +1,10 @@
 local Settings = require("scripts/settings/minigame/minigame_settings")
 local UIWidget = require("scripts/managers/ui/ui_widget")
-local MOVE = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
-local PRIMARY = { action_one_hold = true, interact_hold = true, jump_held = true }
-local CHAIN = 256 -- seed draws searched for the server's position: earlier sessions on the same device advance it
+-- Seed steps searched for the server's position (earlier sessions on the same device advance it). A server draw takes
+-- two steps (minigame_frequency.lua:67-77), so this covers 128 possible positions.
+local CHAIN = 256
 local MATCH = 0.004 -- targets are whole hundredths (minigame_frequency.lua:67-77)
 local REPORT_WAIT = 0.1 -- the first armed press waits this long for the server's report of the session's first frame
-
-local function movement(action, x, y)
-    if action == "move_left" then return math.max(-x, 0) end
-    if action == "move_right" then return math.max(x, 0) end
-    if action == "move_forward" then return math.max(y, 0) end
-    if action == "move_backward" then return math.max(-y, 0) end
-    return Vector3(x, y, 0)
-end
 
 -- One frequency draw (minigame_frequency.lua:67-77). Each next_random call advances the seed one step whatever the
 -- bounds (types/darktide/core.lua).
@@ -57,6 +49,7 @@ local function predict(start_seed, tx, ty)
 end
 
 return function(ctx)
+    local MOVE, PRIMARY, movement = ctx.MOVE, ctx.PRIMARY, ctx.movement
     local module = {}
     local game, stage, observed, target_x, target_y, direction_x, direction_y
     local ready_at = 0
@@ -66,22 +59,13 @@ return function(ctx)
     local waiting_since, stage_one_failed, recovery_requested
     local move_t, move_x, move_y
     local arrows
-    local openings = setmetatable({}, { __mode = "k" })
+    local openings, opening, clear_openings = ctx.openings("MinigameFrequency")
     -- Pipeline (DESIGN.md, Frequency pipeline): all three tests at once from predicted targets.
     local start_seeds = setmetatable({}, { __mode = "k" }) -- client minigame -> start seed of its latest setup
     local predicting = true -- cleared after a wrong prediction, until the next mission
     local axis_moved -- this session consumed a direction, which changes the server's frequency
     local plan, plan_x, plan_y -- targets 2 and 3 predicted for the first target plan_x, plan_y (false: none)
     local armed_plan, pipeline, fresh_t
-
-    local function opening(mg)
-        local receipt = openings[mg]
-        if not receipt then
-            receipt = {}
-            openings[mg] = receipt
-        end
-        return receipt
-    end
 
     local function fresh(mg)
         local receipt = openings[mg]
@@ -92,13 +76,7 @@ return function(ctx)
     local range_y = Settings.frequency_height_max_scale - Settings.frequency_height_min_scale
 
     function module.reset(reason)
-        if reason ~= "identity" then
-            if reason == "session_end" or reason == "session_changed" or reason == "ownership_changed" or reason == "inactive" then
-                if game then openings[game] = nil end
-            else
-                table.clear(openings)
-            end
-        end
+        clear_openings(game, reason)
         game, stage, observed, target_x, target_y, direction_x, direction_y = nil, nil, nil, nil, nil, nil, nil
         ready_at, pulse = 0, {}
         armed_frame, armed_t, armed_stage, armed_x, armed_y = nil, nil, nil, nil, nil
@@ -111,7 +89,6 @@ return function(ctx)
     end
 
     function module.observe(mg, t)
-        t = t or ctx.time()
         if not t or not mg or mg ~= ctx.active_minigame or not mg.target_frequency
             or not ctx.settings.enable_frequency_auto or mg:is_completed() then
             if game then module.reset("inactive") end
@@ -165,8 +142,6 @@ return function(ctx)
     end
 
     function module.input(action, original, t, source)
-        if source ~= "input_service" then return original end
-        t = t or ctx.time()
         if not t or not game or game ~= ctx.active_minigame or not ctx.settings.enable_frequency_auto
             or game:is_completed() then return original end
         -- Never steer at speed 5, not even before the gameplay receipt: the target is submitted directly, and the
@@ -230,14 +205,6 @@ return function(ctx)
             and wanted.x == armed_x and wanted.y == armed_y
     end
 
-    ctx.mod:hook_safe("MinigameFrequency", "start", function(self, player)
-        if ctx.is_local_player(player) then
-            if openings[self] and openings[self].foreign then openings[self] = nil end
-            opening(self).started = true
-        elseif player or not ctx.session_valid(self) then
-            openings[self] = { foreign = true }
-        end
-    end)
     ctx.mod:hook_safe("MinigameFrequency", "stop", function(self, is_automatic)
         -- A continuing argumentless receipt must not discard an outstanding test.
         if is_automatic ~= nil or not ctx.session_valid(self) then

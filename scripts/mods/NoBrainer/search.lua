@@ -1,19 +1,10 @@
 local Settings = require("scripts/settings/minigame/minigame_settings")
 local ViewSettings = require("scripts/ui/views/scanner_display_view/scanner_display_view_decode_search_settings")
 local UIWidget = require("scripts/managers/ui/ui_widget")
-local MOVE = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
-local PRIMARY = { action_one_hold = true, interact_hold = true, jump_held = true }
 local HOLD = 0.08 -- about four frames from the native resume (observed: press + 0.6/0.25 s + two frames)
 
-local function movement(action, x, y)
-    if action == "move_left" then return math.max(-x, 0) end
-    if action == "move_right" then return math.max(x, 0) end
-    if action == "move_forward" then return math.max(y, 0) end
-    if action == "move_backward" then return math.max(-y, 0) end
-    return Vector3(x, y, 0)
-end
-
 return function(ctx)
+    local MOVE, PRIMARY, movement = ctx.MOVE, ctx.PRIMARY, ctx.movement
     local module = {}
     local game, stage, observed, target_x, target_y
     local cursor_x, cursor_y
@@ -122,7 +113,6 @@ return function(ctx)
     end
 
     function module.observe(mg, t)
-        t = t or ctx.time()
         if not t or not mg or mg ~= ctx.active_minigame or not mg.current_decode_target
             or not ctx.settings.enable_expedition_auto_solve or mg:is_completed() then
             if game then module.reset("inactive") end
@@ -298,9 +288,6 @@ return function(ctx)
     end
 
     function module.input(action, original, t, source)
-        -- The extension reads the serialized sample; never replace it with a newer decision.
-        if source ~= "input_service" then return original end
-        t = t or ctx.time()
         if not t or not game or game ~= ctx.active_minigame or not ctx.settings.enable_expedition_auto_solve
             or game:is_completed() then return original end
         if not PRIMARY[action] and not MOVE[action] then return original end

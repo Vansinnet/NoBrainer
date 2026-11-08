@@ -44,6 +44,14 @@ local function run(rtt, host, seed, lag, kicks)
         time = function() return now end,
         is_local_player = function() return true end,
         session_valid = function() return true end,
+        MOVE = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true },
+        movement = function(action, x, y)
+            if action == "move_left" then return math.max(-x, 0) end
+            if action == "move_right" then return math.max(x, 0) end
+            if action == "move_forward" then return math.max(y, 0) end
+            if action == "move_backward" then return math.max(-y, 0) end
+            return Vector3(x, y, 0)
+        end,
         mod = {
             hook_require = function(_, _, callback) callback(class) end,
             hook_safe = function(_, target, name, fn) target[name] = fn end,

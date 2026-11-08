@@ -25,6 +25,43 @@ function ctx.pacing(id)
     return pacing[id]
 end
 
+local MOVEMENT = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
+ctx.MOVE, ctx.PRIMARY = MOVEMENT, { action_one_hold = true, interact_hold = true, jump_held = true }
+
+-- A direction as the input service reads it: the vector for `move`, else that axis's share.
+function ctx.movement(action, x, y)
+    if action == "move_left" then return math.max(-x, 0) end
+    if action == "move_right" then return math.max(x, 0) end
+    if action == "move_forward" then return math.max(y, 0) end
+    if action == "move_backward" then return math.max(-y, 0) end
+    return Vector3(x, y, 0)
+end
+
+-- Which setup receipts of a client minigame arrived since our own start (Drill, Frequency); `foreign` marks another
+-- player's session. A session reset drops the minigame's entry, any other reset all of them.
+local SESSION_RESETS = { session_end = true, session_changed = true, ownership_changed = true, inactive = true }
+function ctx.openings(class)
+    local openings = setmetatable({}, { __mode = "k" })
+    local function opening(mg)
+        local receipt = openings[mg] or {}
+        openings[mg] = receipt
+        return receipt
+    end
+    local function clear(mg, reason)
+        if reason == "identity" then return end
+        if not SESSION_RESETS[reason] then table.clear(openings) elseif mg then openings[mg] = nil end
+    end
+    mod:hook_safe(class, "start", function(self, player)
+        if ctx.is_local_player(player) then
+            if openings[self] and openings[self].foreign then openings[self] = nil end
+            opening(self).started = true
+        elseif player or not ctx.session_valid(self) then
+            openings[self] = { foreign = true }
+        end
+    end)
+    return openings, opening, clear
+end
+
 -- The server hands extension n the level seed + n (minigame_system.lua:30-71) and syncs no seed to clients. A client
 -- registers the same level units in the same order, so it counts from the same level seed.
 local next_seeds = setmetatable({}, { __mode = "k" }) -- MinigameSystem -> seed its next extension gets
@@ -70,8 +107,6 @@ function ctx.movement_settled(mg, t)
     if ctx.state_seen then return ctx.timely_frame ~= nil and ctx.timely_frame > frame end
     return t ~= nil and ctx.moved_t ~= nil and t >= ctx.moved_t + 1
 end
-
-local MOVEMENT = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
 
 -- Record the newest fixed input frame that serialized any direction (ours or the player's).
 local function track_movement(action, value)
@@ -298,7 +333,6 @@ local function can_reinteract(pending, t)
         and interactor:can_interact(pending.terminal, "decoding")
 end
 
-local NEUTRAL_MOVE = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
 
 -- Ephemeral cancel and interact for a pending reopen; every other routed action stays neutral meanwhile.
 local function reopen_input(action, original, t)
@@ -320,7 +354,7 @@ local function reopen_input(action, original, t)
         return false
     end
     if action == "move" then return Vector3(0, 0, 0) end
-    if NEUTRAL_MOVE[action] then return 0 end
+    if MOVEMENT[action] then return 0 end
     return false
 end
 
@@ -462,11 +496,11 @@ end
 
 local relevant = {
     action_one_hold = true, interact_hold = true, jump_held = true,
-    action_one_pressed = true, action_one_released = true,
+    action_one_pressed = true,
     action_two_pressed = true, interact_pressed = true,
     move = true, move_left = true, move_right = true, move_forward = true, move_backward = true,
 }
-local scan_actions = { action_one_pressed = true, action_one_hold = true, action_one_released = true }
+local scan_actions = { action_one_pressed = true, action_one_hold = true }
 
 local function solve_input(action, original)
     if reopen and sampling_time then

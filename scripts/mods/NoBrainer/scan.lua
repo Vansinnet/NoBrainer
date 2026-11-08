@@ -145,11 +145,11 @@ return function(ctx)
     end
 
     function module.input(action, original, t, source)
-        if action ~= "action_one_pressed" and action ~= "action_one_hold" and action ~= "action_one_released" then
+        if action ~= "action_one_pressed" and action ~= "action_one_hold" then
             return original
         end
         if not t or not ctx.settings.enable_auto_scan or ctx.active_minigame
-            or source ~= "input_service" and source ~= "player_unit_input" or not components() then
+            or not components() then
             return original
         end
         local current_action = weapon_action.current_action_name
@@ -171,7 +171,7 @@ return function(ctx)
         end
         if not hold_target then
             -- Only the service press enters the serialized input stream.
-            if source ~= "input_service" or action ~= "action_one_pressed"
+            if action ~= "action_one_pressed"
                 or current_action ~= "action_scan" or target == retry_target and t < retry_at then
                 return original
             end
@@ -181,8 +181,6 @@ return function(ctx)
         end
         if action == "action_one_hold" then
             return true
-        elseif action == "action_one_released" then
-            return false
         elseif pressed_at == t then
             return true
         end
@@ -219,26 +217,16 @@ return function(ctx)
                 release_marker(self._unit, self)
             end
         end)
-        ctx.mod:hook(class, "set_scanning_outline", function(func, self, active)
-            local requested = marked[self._unit]
-            if requested then
-                requested.outline = active
-                if ctx.settings.enable_scan and self:is_active() then
-                    active = true
+        for method, field in pairs({ set_scanning_outline = "outline", set_scanning_highlight = "highlight" }) do
+            ctx.mod:hook(class, method, function(func, self, active)
+                local requested = marked[self._unit]
+                if requested then
+                    requested[field] = active
+                    if ctx.settings.enable_scan and self:is_active() then active = true end
                 end
-            end
-            return func(self, active)
-        end)
-        ctx.mod:hook(class, "set_scanning_highlight", function(func, self, active)
-            local requested = marked[self._unit]
-            if requested then
-                requested.highlight = active
-                if ctx.settings.enable_scan and self:is_active() then
-                    active = true
-                end
-            end
-            return func(self, active)
-        end)
+                return func(self, active)
+            end)
+        end
     end)
 
     ctx.mod:hook_require("scripts/extension_systems/visual_loadout/wieldable_slot_scripts/auspex_scanning_effects", function(class)

@@ -1,7 +1,5 @@
 local Settings = require("scripts/settings/minigame/minigame_settings")
 local UIWidget = require("scripts/managers/ui/ui_widget")
-local MOVE = { move = true, move_left = true, move_right = true, move_forward = true, move_backward = true }
-local PRIMARY = { action_one_hold = true, interact_hold = true, jump_held = true }
 local CONE, POWER = math.pi / 3, Settings.drill_move_distance_power -- minigame_drill.lua:296-298
 local STEP, MARGIN = math.rad(0.25), math.rad(0.5)
 local HOLD = 2.5 -- the result tolerance cancel_requested gives any move
@@ -40,15 +38,8 @@ local function same_board(mg, board)
     return true
 end
 
-local function movement(action, x, y)
-    if action == "move_left" then return math.max(-x, 0) end
-    if action == "move_right" then return math.max(x, 0) end
-    if action == "move_forward" then return math.max(y, 0) end
-    if action == "move_backward" then return math.max(-y, 0) end
-    return Vector3(x, y, 0)
-end
-
 return function(ctx)
+    local MOVE, PRIMARY, movement = ctx.MOVE, ctx.PRIMARY, ctx.movement
     local module = {}
     local game, stage, observed, cursor_x, cursor_y, target_x, target_y, target_index
     local pending_since, pending_frame, settled_at, move_t, move_x, move_y
@@ -56,8 +47,7 @@ return function(ctx)
     local move_release, sent_frame
     local pulse = {}
     local ready_at, submitted_until = 0, 0
-    local cache_game, cache_stage, cache_index, cache_target
-    local openings = setmetatable({}, { __mode = "k" })
+    local openings, opening, clear_openings = ctx.openings("MinigameDrill")
     local network, float_input, predicted = Network, nil, nil
     local press_t, burst_from, burst_until, burst_x, burst_y, burst_index, last_selected
     local burst_give_up, burst_press
@@ -73,15 +63,6 @@ return function(ctx)
     local entry_board, entry_x, entry_y -- an adopted entry move's board, checked against the first fresh receipts
     local stopped = setmetatable({}, { __mode = "k" }) -- minigame -> gameplay time its last session stopped
 
-    local function opening(mg)
-        local receipt = openings[mg]
-        if not receipt then
-            receipt = {}
-            openings[mg] = receipt
-        end
-        return receipt
-    end
-
     local function fresh(mg)
         local receipt = openings[mg]
         return mg._is_server == true or receipt and receipt.started and receipt.stage and receipt.cursor and receipt.search
@@ -91,11 +72,7 @@ return function(ctx)
         local s = mg:current_stage()
         local index = s and mg:correct_targets()[s]
         local targets = s and mg:targets()[s]
-        local position = index and targets and targets[index]
-        if cache_game ~= mg or cache_stage ~= s or cache_index ~= index or cache_target ~= position then
-            cache_game, cache_stage, cache_index, cache_target = mg, s, index, position
-        end
-        return s, cache_index, cache_target
+        return s, index, index and targets and targets[index]
     end
 
     local function pack(value)
@@ -164,13 +141,7 @@ return function(ctx)
     end
 
     function module.reset(reason)
-        if reason ~= "identity" then
-            if reason == "session_end" or reason == "session_changed" or reason == "ownership_changed" or reason == "inactive" then
-                if game then openings[game] = nil end
-            else
-                table.clear(openings)
-            end
-        end
+        clear_openings(game, reason)
         game, stage, observed, cursor_x, cursor_y = nil, nil, nil, nil, nil
         target_x, target_y, target_index, predicted = nil, nil, nil, nil
         press_t, burst_from, last_selected = nil, nil, nil
@@ -179,7 +150,6 @@ return function(ctx)
         ready_at, submitted_until = 0, 0
         move_release, sent_frame = true, nil
         table.clear(pulse)
-        cache_game, cache_stage, cache_index, cache_target = nil, nil, nil, nil
         ack_wait, press_frame = nil, nil
         entry_board, entry_x, entry_y = nil, nil, nil
         if reason ~= "identity" then entry, entry_frame = nil, nil end
@@ -188,7 +158,6 @@ return function(ctx)
     end
 
     function module.observe(mg, t)
-        t = t or ctx.time()
         if not t or not mg or mg ~= ctx.active_minigame or not mg.correct_targets
             or not ctx.settings.enable_drill_auto or mg:is_completed() then
             if game then module.reset("inactive") end
@@ -310,8 +279,6 @@ return function(ctx)
     end
 
     function module.input(action, original, t, source)
-        if source ~= "input_service" then return original end
-        t = t or ctx.time()
         if not t or not ctx.active_minigame or not ctx.settings.enable_drill_auto then return original end
         -- Until this session's own state arrives (a first hack, a re-hack still showing the solved board, a
         -- transition), a direction the player holds would select a node the solver never sent.
@@ -426,14 +393,6 @@ return function(ctx)
         return recovery_requested
     end
 
-    ctx.mod:hook_safe("MinigameDrill", "start", function(self, player)
-        if ctx.is_local_player(player) then
-            if openings[self] and openings[self].foreign then openings[self] = nil end
-            opening(self).started = true
-        elseif player or not ctx.session_valid(self) then
-            openings[self] = { foreign = true }
-        end
-    end)
     ctx.mod:hook_safe("MinigameDrill", "stop", function(self, is_automatic)
         -- A local stop, or another player's session ending; the server echoes our own stop later without arguments.
         local receipt = openings[self]

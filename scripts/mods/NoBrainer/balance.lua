@@ -240,22 +240,14 @@ return function(ctx)
         end)
     end)
 
-    function module.input(action, original, t, source)
-        local vector = action == "move" or action == "move_controller"
-        local direction = action == "move_left" or action == "move_right"
-            or action == "move_forward" or action == "move_backward"
-        if not vector and not direction then
-            return original
-        end
+    function module.input(action, original, t)
+        if not ctx.MOVE[action] then return original end
         -- RPC receipts use gameplay time; the caller's fixed-step time can lag behind them.
         t = ctx.time()
         if not t or not current or current ~= ctx.active_minigame or not ctx.settings.enable_balance
             or not ready or not sample_at or t < sample_at or t - sample_at > SAMPLE_TIMEOUT
             or current:is_completed() or current:state() ~= MinigameSettings.game_states.gameplay
             or not current._minigame_unit or not Unit.alive(current._minigame_unit) then
-            return original
-        end
-        if source ~= "input_service" and source ~= "player_unit_input" then
             return original
         end
         if correction_at ~= t then
@@ -282,9 +274,7 @@ return function(ctx)
             correction_at = t
         end
         -- Online authority consumes serialized directions, not the local move read.
-        local sent = source == "input_service" and direction
-            or source == "player_unit_input" and action == "move" and current._is_server
-        if sent then
+        if action ~= "move" then
             if recorded_at == t then
                 times[head], xs[head], ys[head] = apply_at, correction_x, correction_y
             else
@@ -292,16 +282,7 @@ return function(ctx)
             end
             recorded_at, stopped = t, false
         end
-        if vector then
-            return Vector3(-correction_x, correction_y, 0)
-        elseif action == "move_left" then
-            return math.max(correction_x, 0)
-        elseif action == "move_right" then
-            return math.max(-correction_x, 0)
-        elseif action == "move_forward" then
-            return math.max(correction_y, 0)
-        end
-        return math.max(-correction_y, 0)
+        return ctx.movement(action, -correction_x, correction_y)
     end
 
     function module.settings_changed(id)
