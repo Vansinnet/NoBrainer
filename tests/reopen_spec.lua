@@ -880,6 +880,36 @@ test("Drill opening with W held through the entry, and on a local server", funct
     assert(opened >= 17 and local_opened >= 17, "openings with W held " .. opened .. ", local " .. local_opened)
 end)
 
+-- Before this session's own state arrives, a held direction would select a node the solver never sent and switch
+-- planned aim off for the mission: on a terminal's first hack (the client minigame still in state none) and on a
+-- re-hack after a decoder interrupt (the client still shows the solved board).
+test("Drill with W held 0.6s into a first hack and a re-hack, with and without the opening: no unexplained node", function()
+    for _, no_opening in ipairs({ false, true }) do
+        for _, delay in ipairs({ 0.05, 0.3 }) do
+            for _, rehack in ipairs({ false, true }) do
+                for seed = 1, 10 do
+                    local f = open_drill(seed, delay, { no_opening = no_opening })
+                    local n
+                    if rehack then
+                        n = interrupt(f, walk(f, 1, 0.5))
+                    else
+                        n = leave(f, 0.4)
+                        f.client._current_state = f.settings.game_states.none
+                    end
+                    f.raw.move_forward, f.raw.move = 1, f.env.Vector3(0, 1, 0)
+                    local case = string.format("seed %d, delay %.2f, %s, %s", seed, delay,
+                        no_opening and "no opening" or "opening", rehack and "re-hack" or "first hack")
+                    assert(enter(f, n, function(g, i)
+                        if i == 30 then g.raw.move_forward, g.raw.move = 0, g.env.Vector3.zero() end
+                    end), case .. ": stalled")
+                    eq(f.server._mistakes, 0, case .. ": mistake")
+                    eq(count(f, "unexplained"), 0, case .. ": unexplained node")
+                end
+            end
+        end
+    end
+end)
+
 test("Frequency on a local server: every stage in the first press frame", function()
     local times = {}
     for seed = 1, 20 do

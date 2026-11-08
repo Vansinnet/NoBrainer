@@ -358,5 +358,27 @@ test("DMF debug lines report the hold and its result", function()
     print("  " .. (lines[1] or "(no lines)"))
 end)
 
+-- The client shows a transition until the server's state receipt, while the server resumes on its own clock: a key the
+-- player holds or clicks there must not reach the server, which would score it at the old cursor.
+for _, case in ipairs({ { 5, "action_one_hold" }, { 5, "interact_hold" }, { 3, "action_one_hold" }, { 5, "clicks" } }) do
+    local speed, key = case[1], case[2]
+    test(string.format("Player input through the solve, speed %d, %s, receipts 0.3s: no mistake, solves", speed, key), function()
+        local values = { expedition_solve_speed = speed, enable_scan = false, enable_auto_scan = false }
+        for seed = 1, 10 do
+            local f = open(seed, values, 0.3)
+            local origin, done = f.t, false
+            for frame = 1, 6000 do
+                if key == "clicks" then f.raw.action_one_hold = (f.t - origin) % 0.3 < 0.1 else f.raw[key] = true end
+                f:tick(frame)
+                if f.server:is_completed() and f.client:is_completed() then done = true break end
+            end
+            if not baseline then
+                assert(done, "seed " .. seed .. ": stalled")
+                eq(f.server._mistakes, 0, "seed " .. seed .. ": mistakes")
+            end
+        end
+    end)
+end
+
 print(string.format("RESULT %d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

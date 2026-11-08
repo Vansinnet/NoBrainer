@@ -302,9 +302,15 @@ return function(ctx)
         if source ~= "input_service" then return original end
         t = t or ctx.time()
         if not t or not game or game ~= ctx.active_minigame or not ctx.settings.enable_expedition_auto_solve
-            or game:is_completed() or game:state() ~= Settings.game_states.gameplay and not plan_stage
-            and not (hold_stage == stage and MOVE[action]) then return original end
+            or game:is_completed() then return original end
         if not PRIMARY[action] and not MOVE[action] then return original end
+        -- The server leaves a transition on its own clock, while the client may still show it: a key the player
+        -- holds or presses then would score at the old cursor (minigame_decode_search.lua:163-201).
+        if game:state() ~= Settings.game_states.gameplay and not plan_stage
+            and not (hold_stage == stage and MOVE[action]) then
+            if PRIMARY[action] then return ctx.pulse(pulse, false) end
+            return movement(action, 0, 0)
+        end
         local sample = ctx.input_frame
         if not sample then return original end
         if reopen_stage and sent_frame ~= sample then

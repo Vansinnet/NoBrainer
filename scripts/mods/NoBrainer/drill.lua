@@ -312,9 +312,13 @@ return function(ctx)
     function module.input(action, original, t, source)
         if source ~= "input_service" then return original end
         t = t or ctx.time()
-        if not t or not game or game ~= ctx.active_minigame or not ctx.settings.enable_drill_auto
-            or game:is_completed() or game:state() ~= Settings.game_states.gameplay
-            and not (burst_from and MOVE[action]) then return original end
+        if not t or not ctx.active_minigame or not ctx.settings.enable_drill_auto then return original end
+        -- Until this session's own state arrives (a first hack, a re-hack still showing the solved board, a
+        -- transition), a direction the player holds would select a node the solver never sent.
+        if game ~= ctx.active_minigame then return MOVE[action] and movement(action, 0, 0) or original end
+        if (game:is_completed() or game:state() ~= Settings.game_states.gameplay) and not MOVE[action] then
+            return original
+        end
         if PRIMARY[action] then
             local ready = fresh(game) and not module.cancel_requested() and not pending_since
                 and settled_at ~= nil and t >= ready_at and t >= submitted_until
